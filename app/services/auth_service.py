@@ -557,3 +557,103 @@ async def logout_all_devices(
     )
     await db.commit()
     return revoked_count
+
+
+# ── Admin session management ──────────────────────────────────────────────────
+
+async def revoke_session(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    admin_user_id: int,
+    admin_org_id: int,
+    ip_address: str | None,
+) -> None:
+    """Revoke a single session by ID. Only sessions in the admin's org can be revoked.
+
+    Returns 404 for sessions that don't exist, belong to a different org, or are
+    already revoked — all indistinguishable to the caller to prevent oracle leakage.
+    """
+    now = datetime.now(tz=timezone.utc)
+
+    result = await db.execute(
+        select(SessionModel)
+        .where(
+            SessionModel.id == session_id,
+            SessionModel.organisation_id == admin_org_id,
+            SessionModel.revoked_at.is_(None),
+        )
+        .with_for_update()
+    )
+    session = result.scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    target_user_id = session.user_id
+    session.revoked_at = now
+    session.revoked_by = admin_user_id
+    session.revoke_reason = "admin_force"
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="session.force_revoked",
+        resource_type="sessions",
+        user_id=admin_user_id,
+        organisation_id=admin_org_id,
+        after_data={"target_session_id": str(session_id), "target_user_id": target_user_id},
+        ip_address=ip_address,
+    )
+    await db.commit()
+
+
+async def revoke_user_sessions(
+    db: AsyncSession,
+    *,
+    target_user_id: int,
+    admin_user_id: int,
+    admin_org_id: int,
+    ip_address: str | None,
+) -> int:
+    """Revoke all active sessions for a user within the admin's organisation.
+
+    Verifies the target user is a member of the admin's org before acting.
+    Returns 404 if the user is not a member (avoids user-ID enumeration across orgs).
+    Sessions are filtered by organisation_id so cross-org sessions are untouched.
+    """
+    membership = await db.execute(
+        select(UserOrganisation).where(
+            UserOrganisation.user_id == target_user_id,
+            UserOrganisation.organisation_id == admin_org_id,
+        )
+    )
+    if membership.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found in this organisation",
+        )
+
+    now = datetime.now(tz=timezone.utc)
+    result = await db.execute(
+        update(SessionModel)
+        .where(
+            SessionModel.user_id == target_user_id,
+            SessionModel.organisation_id == admin_org_id,
+            SessionModel.revoked_at.is_(None),
+        )
+        .values(revoked_at=now, revoked_by=admin_user_id, revoke_reason="admin_force")
+    )
+    revoked_count = result.rowcount
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="session.all_revoked",
+        resource_type="sessions",
+        user_id=admin_user_id,
+        organisation_id=admin_org_id,
+        after_data={"target_user_id": target_user_id, "revoked_count": revoked_count},
+        ip_address=ip_address,
+    )
+    await db.commit()
+    return revoked_count
