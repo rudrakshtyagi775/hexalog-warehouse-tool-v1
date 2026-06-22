@@ -44,6 +44,18 @@ class RefreshResponse(BaseModel):
     expires_at: datetime
 
 
+class SwitchOrganisationRequest(BaseModel):
+    organisation_id: int
+
+
+class SwitchOrganisationResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+    organisation: OrganisationInfo
+    roles: list[UserRoleEnum]
+
+
 class MeResponse(BaseModel):
     user_id: int
     email: str

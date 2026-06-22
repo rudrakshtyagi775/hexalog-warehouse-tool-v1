@@ -52,6 +52,16 @@ class RefreshResult:
     new_refresh_token: str
 
 
+@dataclass
+class SwitchOrgResult:
+    access_token: str
+    expires_at: datetime
+    refresh_token: str
+    organisation_id: int
+    organisation_name: str
+    roles: list[UserRoleEnum]
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _hash_refresh_token(raw_token: str) -> str:
@@ -420,6 +430,99 @@ async def logout(
 
 
 # ── Logout-all ────────────────────────────────────────────────────────────────
+
+async def switch_organisation(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    from_organisation_id: int,
+    target_org_id: int,
+    ip_address: str | None,
+    user_agent: str | None,
+) -> SwitchOrgResult:
+    """Create a new session for target_org_id and issue a fresh token pair.
+
+    The old session is intentionally left alive — the browser's cookie is
+    replaced, so it can no longer be refreshed and will die by inactivity
+    or absolute expiry. Per the June 18 redesign: old session is NOT revoked.
+    """
+    # Verify membership and load org name in one round-trip
+    membership_result = await db.execute(
+        select(UserOrganisation)
+        .where(
+            UserOrganisation.user_id == user_id,
+            UserOrganisation.organisation_id == target_org_id,
+        )
+        .options(selectinload(UserOrganisation.organisation))
+    )
+    user_org = membership_result.scalar_one_or_none()
+    if user_org is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of that organisation",
+        )
+
+    # Roles for the target org (may differ from current org)
+    roles_result = await db.execute(
+        select(UserRole).where(
+            UserRole.user_id == user_id,
+            UserRole.organisation_id == target_org_id,
+        )
+    )
+    roles = [ur.role for ur in roles_result.scalars().all()]
+
+    # New session
+    now = datetime.now(tz=timezone.utc)
+    raw_token = secrets.token_hex(32)
+    token_hash = _hash_refresh_token(raw_token)
+    session_id = uuid.uuid4()
+    session_expires_at = now + timedelta(hours=settings.SESSION_ABSOLUTE_EXPIRE_HOURS)
+
+    new_session = SessionModel(
+        id=session_id,
+        refresh_token_hash=token_hash,
+        user_id=user_id,
+        organisation_id=target_org_id,
+        last_used_at=now,
+        expires_at=session_expires_at,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+    db.add(new_session)
+
+    access_token, expires_at = issue_access_token(
+        user_id=user_id,
+        organisation_id=target_org_id,
+        roles=roles,
+        session_id=str(session_id),
+    )
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="auth.switch_organisation",
+        resource_type="sessions",
+        user_id=user_id,
+        organisation_id=target_org_id,
+        after_data={
+            "from_organisation_id": from_organisation_id,
+            "to_organisation_id": target_org_id,
+        },
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+
+    org_name = user_org.organisation.name if user_org.organisation else ""
+    return SwitchOrgResult(
+        access_token=access_token,
+        expires_at=expires_at,
+        refresh_token=raw_token,
+        organisation_id=target_org_id,
+        organisation_name=org_name,
+        roles=roles,
+    )
+
 
 async def logout_all_devices(
     db: AsyncSession,

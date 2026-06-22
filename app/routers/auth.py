@@ -10,6 +10,8 @@ from app.schemas.auth import (
     MeResponse,
     OrganisationInfo,
     RefreshResponse,
+    SwitchOrganisationRequest,
+    SwitchOrganisationResponse,
     UserInfo,
 )
 from app.schemas.common import MessageResponse
@@ -19,6 +21,7 @@ from app.services.auth_service import (
     logout,
     logout_all_devices,
     refresh_session,
+    switch_organisation,
 )
 from app.config import settings
 from app.utils.request import get_client_ip
@@ -136,6 +139,35 @@ async def logout_all_endpoint(
         ip_address=get_client_ip(request),
     )
     return MessageResponse(message=f"Logged out from {revoked} other session(s)")
+
+
+@router.post(
+    "/switch-organisation",
+    response_model=SwitchOrganisationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def switch_organisation_endpoint(
+    body: SwitchOrganisationRequest,
+    request: Request,
+    response: Response,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> SwitchOrganisationResponse:
+    result = await switch_organisation(
+        db,
+        user_id=current_user.user_id,
+        from_organisation_id=current_user.organisation_id,
+        target_org_id=body.organisation_id,
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent"),
+    )
+    _set_refresh_cookie(response, result.refresh_token)
+    return SwitchOrganisationResponse(
+        access_token=result.access_token,
+        expires_at=result.expires_at,
+        organisation=OrganisationInfo(id=result.organisation_id, name=result.organisation_name),
+        roles=result.roles,
+    )
 
 
 @router.get("/me", response_model=MeResponse, status_code=status.HTTP_200_OK)
