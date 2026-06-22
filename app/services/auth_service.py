@@ -333,6 +333,15 @@ async def refresh_session(
     if (now - session.last_used_at) > inactivity_limit:
         session.revoked_at = now
         session.revoke_reason = "inactivity_timeout"
+        await write_audit_log(
+            db,
+            module=AuditModuleEnum.shared,
+            action="session.inactivity_timeout",
+            resource_type="sessions",
+            user_id=session.user_id,
+            organisation_id=session.organisation_id,
+            ip_address=ip_address,
+        )
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

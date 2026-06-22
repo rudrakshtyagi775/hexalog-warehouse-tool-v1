@@ -6,13 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Auth module (~75% complete).** The application skeleton, all auth models, the Alembic initial migration, and core auth services are implemented. Current branch: `auth-module`.
+**Auth module (implementation complete — ready for PR review).** All 8 auth milestone items are implemented. Current branch: `auth-module`.
 
-**Completed (Items 1–6):** ORM models, initial migration (`9014f72e9f0c`), `auth_service` (login/refresh/logout/logout-all), `jwt_service`, `password_service`, `audit_service`, `dependencies/auth.py`, all auth routers, unit tests (23 passing), integration test stubs.
+**Completed (Items 1–8):** ORM models, initial migration (`9014f72e9f0c`), `auth_service` (login/refresh/logout/logout-all/switch-organisation/admin revoke), `jwt_service`, `password_service`, `audit_service`, `dependencies/auth.py`, all auth routers (`routers/auth.py`, `routers/admin.py`), unit tests (23 passing), integration tests (57 passing across 8 files).
 
-**Still pending (Items 7–8):** `POST /api/auth/switch-organisation`, `DELETE /api/admin/sessions/:id`, `DELETE /api/admin/users/:id/sessions`.
-
-**Known deferred gap:** `refresh_session()` Case 5 (inactivity timeout) sets `revoked_at` and commits but writes **no audit log**. All other revocation events are audited. Fix before PR merge.
+**Deferred (not blockers):** `get_client_ip()` needs `X-Forwarded-For` support before production deploy behind reverse proxy. Session table has no cleanup job (expired rows accumulate). Confirm with Arpit whether `logout_all_devices` intentionally revokes across all orgs.
 
 PRD: *Warehouse Tool v1.0* — Adesh Agarwal, 12 June 2026  
 Tech Lead: Arpit  
@@ -158,9 +156,9 @@ One DB SELECT per authenticated request (the `User` row only, for `is_active` an
 | POST | `/api/auth/logout` | Cookie | ✅ implemented |
 | POST | `/api/auth/logout-all` | Bearer + Cookie | ✅ implemented |
 | GET | `/api/auth/me` | Bearer | ✅ implemented |
-| POST | `/api/auth/switch-organisation` | Bearer | ⏳ pending (Item 7) |
-| DELETE | `/api/admin/sessions/:id` | Bearer (admin) | ⏳ pending (Item 8) |
-| DELETE | `/api/admin/users/:id/sessions` | Bearer (admin) | ⏳ pending (Item 8) |
+| POST | `/api/auth/switch-organisation` | Bearer | ✅ implemented |
+| DELETE | `/api/admin/sessions/:id` | Bearer (admin) | ✅ implemented |
+| DELETE | `/api/admin/users/:id/sessions` | Bearer (admin) | ✅ implemented |
 
 ### Session invalidation events (all set `sessions.revoked_at` in same transaction)
 
@@ -309,9 +307,11 @@ All role checks are server-side in `app/dependencies/auth.py`. Admins implicitly
 
 | Item | Blocks |
 |------|--------|
+| Confirm `logout_all_devices` cross-org revocation is intentional (no `organisation_id` filter in bulk UPDATE) | Auth PR merge |
 | Confirm `APP_TIMEZONE=Asia/Kolkata` for Inscan Number date generation | Phase 1 |
 | Label printer model + exact label dimensions (A6 assumed) | Phase 2 |
-| Add audit log to `refresh_session()` inactivity timeout case | Auth PR merge |
+| `get_client_ip()` — add `X-Forwarded-For` support before production deploy behind reverse proxy | Production deploy |
+| Session table cleanup — add opportunistic cleanup in `login()` or a scheduled daily job | Production deploy |
 
 ---
 

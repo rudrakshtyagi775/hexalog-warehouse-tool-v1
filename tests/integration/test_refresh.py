@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import settings
+from app.models.audit_log import AuditLog
 from app.models.user import Session as SessionModel
 from app.services.auth_service import _hash_refresh_token
 
@@ -180,11 +181,7 @@ async def test_refresh_expired_session(client, admin_user, org, db):
 
 @pytest.mark.asyncio
 async def test_refresh_inactivity_timeout(client, admin_user, org, db):
-    """Session idle beyond SESSION_INACTIVITY_MINUTES → 401, session revoked.
-
-    The inactivity-timeout code path currently omits an audit log write
-    (CLAUDE.md open item — fix before auth-module PR merge).
-    """
+    """Session idle beyond SESSION_INACTIVITY_MINUTES → 401, session revoked."""
     _, raw_token = await _login(client, admin_user, org)
 
     session = await _get_session_by_token(db, raw_token)
@@ -200,6 +197,31 @@ async def test_refresh_inactivity_timeout(client, admin_user, org, db):
     await db.refresh(session)
     assert session.revoked_at is not None
     assert session.revoke_reason == "inactivity_timeout"
+
+
+@pytest.mark.asyncio
+async def test_refresh_inactivity_timeout_audit_log_written(client, admin_user, org, db):
+    """Audit log row with action='session.inactivity_timeout' is written in the same transaction."""
+    _, raw_token = await _login(client, admin_user, org)
+
+    session = await _get_session_by_token(db, raw_token)
+    session.last_used_at = datetime.now(tz=timezone.utc) - timedelta(
+        minutes=settings.SESSION_INACTIVITY_MINUTES + 1
+    )
+    await db.commit()
+
+    resp = await client.post(REFRESH_URL, cookies={_COOKIE: raw_token})
+    assert resp.status_code == 401
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "session.inactivity_timeout",
+            AuditLog.user_id == admin_user.id,
+            AuditLog.organisation_id == org.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit is not None
 
 
 # ── Missing / unknown token — Case 1 ─────────────────────────────────────────
