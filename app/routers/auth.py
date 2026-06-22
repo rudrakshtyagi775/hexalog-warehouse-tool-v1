@@ -20,13 +20,14 @@ from app.services.auth_service import (
     logout_all_devices,
     refresh_session,
 )
+from app.config import settings
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _COOKIE_NAME = "refresh_token"
 _COOKIE_PATH = "/api/auth"
-_COOKIE_MAX_AGE = 86400  # 24 h — matches SESSION_ABSOLUTE_EXPIRE_HOURS
+_COOKIE_MAX_AGE = settings.SESSION_ABSOLUTE_EXPIRE_HOURS * 3600
 
 
 def _set_refresh_cookie(response: Response, raw_token: str) -> None:
@@ -81,6 +82,7 @@ async def login_endpoint(
 
 @router.post("/refresh", response_model=RefreshResponse, status_code=status.HTTP_200_OK)
 async def refresh_endpoint(
+    request: Request,
     response: Response,
     refresh_token: str | None = Cookie(default=None, alias=_COOKIE_NAME),
     db: AsyncSession = Depends(get_db),
@@ -88,7 +90,7 @@ async def refresh_endpoint(
     if not refresh_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
 
-    result = await refresh_session(db, refresh_token)
+    result = await refresh_session(db, refresh_token, ip_address=get_client_ip(request))
     _set_refresh_cookie(response, result.new_refresh_token)
     return RefreshResponse(
         access_token=result.access_token,

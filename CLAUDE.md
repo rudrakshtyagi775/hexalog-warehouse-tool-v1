@@ -6,11 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Greenfield — no source code exists yet.** Only three approved design documents are committed. All implementation is ahead. The current branch is `auth-module` and the first milestone is the Auth module.
+**Auth module (~75% complete).** The application skeleton, all auth models, the Alembic initial migration, and core auth services are implemented. Current branch: `auth-module`.
+
+**Completed (Items 1–6):** ORM models, initial migration (`9014f72e9f0c`), `auth_service` (login/refresh/logout/logout-all), `jwt_service`, `password_service`, `audit_service`, `dependencies/auth.py`, all auth routers, unit tests (23 passing), integration test stubs.
+
+**Still pending (Items 7–8):** `POST /api/auth/switch-organisation`, `DELETE /api/admin/sessions/:id`, `DELETE /api/admin/users/:id/sessions`.
+
+**Known deferred gap:** `refresh_session()` Case 5 (inactivity timeout) sets `revoked_at` and commits but writes **no audit log**. All other revocation events are audited. Fix before PR merge.
 
 PRD: *Warehouse Tool v1.0* — Adesh Agarwal, 12 June 2026  
 Tech Lead: Arpit  
 Deadline: 30 June 2026
+
+> **README.md is stale** on auth — it still says `tokens_invalidated_at`. The June 18 redesign (below) is authoritative. Do not introduce `tokens_invalidated_at`.
 
 ---
 
@@ -23,8 +31,9 @@ Deadline: 30 June 2026
 | ORM | Async SQLAlchemy 2.0 + asyncpg |
 | Migrations | Alembic (sync psycopg2 URL only — never asyncpg for Alembic) |
 | Auth | 15-min JWT (PyJWT) + rotating refresh token in httpOnly cookie |
-| Password | passlib[bcrypt], BCRYPT_ROUNDS=12 |
+| Password | `bcrypt>=4.0` (direct — no passlib) |
 | Logging | structlog (structured JSON in prod, colored console in dev) |
+| Linting | Ruff (`line-length=100`, `target-version=py312`) |
 | PDF | WeasyPrint (box labels, Phase 2) |
 | Frontend | React 18 + Vite + TypeScript (separate milestone) |
 
@@ -34,23 +43,27 @@ Deadline: 30 June 2026
 
 ## Commands
 
-These commands apply once `pyproject.toml` exists and the environment is set up:
-
 ```bash
 # Install all dependencies (including dev)
 pip install -e ".[dev]"
 
-# Run all tests
-pytest -v
+# Run all unit tests (no database required)
+pytest tests/unit/ -v
+
+# Run all integration tests (requires TEST_DATABASE_URL)
+pytest tests/integration/ -v
 
 # Run a single test file
 pytest tests/integration/test_login.py -v
 
 # Run a single test by name
-pytest tests/integration/test_login.py::test_wrong_password -v
+pytest tests/integration/test_login.py::test_login_wrong_password -v
 
 # Run tests with coverage
 pytest --cov=app/services --cov-report=term-missing
+
+# Lint
+ruff check .
 
 # Start the dev server
 uvicorn app.main:app --reload
@@ -60,31 +73,38 @@ alembic upgrade head
 
 # Generate a new migration (always review before applying)
 alembic revision --autogenerate -m "describe_the_change"
-
-# Alembic uses DATABASE_URL_SYNC (psycopg2), not DATABASE_URL (asyncpg)
 ```
 
-Tests require a separate `TEST_DATABASE_URL` environment variable pointing to a test database.
+Integration tests require `TEST_DATABASE_URL` pointing to a separate PostgreSQL test database. Unit tests (`tests/unit/`) run without any database.
+
+Alembic uses `DATABASE_URL_SYNC` (psycopg2), not `DATABASE_URL` (asyncpg).
 
 ---
 
-## Planned Application Structure
+## Application Structure
 
 ```
 app/
-├── main.py              # FastAPI factory, lifespan, router mounts, exception handlers
-├── config.py            # pydantic-settings Settings singleton — imported everywhere
+├── main.py              # FastAPI factory (create_app()), lifespan, CORSMiddleware, exception handler
+├── config.py            # pydantic-settings Settings singleton — Settings() cached via @lru_cache
 ├── database.py          # async engine, AsyncSessionLocal, get_db dependency
 ├── logging_config.py    # structlog setup — called once in main.py lifespan
 ├── models/              # SQLAlchemy ORM models only — no business logic
-│   ├── base.py          # DeclarativeBase, TimestampMixin
+│   ├── base.py          # DeclarativeBase, TimestampMixin (created_at, updated_at)
 │   ├── enums.py         # all 11 PostgreSQL enum mirrors (str, enum.Enum)
 │   ├── user.py          # User, UserOrganisation, UserRole, Session, LoginAttempt
 │   └── ...
 ├── schemas/             # Pydantic v2 I/O contracts — never import ORM models directly
+│   └── auth.py          # LoginRequest, LoginResponse, MeResponse, CurrentUser (dataclass)
 ├── services/            # All business logic and DB queries — owns commit/rollback
-├── dependencies/        # FastAPI Depends() callables — call services, never query DB directly
+│   ├── auth_service.py  # login(), refresh_session(), logout(), logout_all_devices()
+│   ├── jwt_service.py   # issue_access_token(), decode_access_token()
+│   ├── password_service.py  # hash_password(), verify_password(), DUMMY_HASH
+│   └── audit_service.py # write_audit_log() — strips password_hash, never commits
+├── dependencies/        # FastAPI Depends() callables
+│   └── auth.py          # get_current_user, require_roles, require_admin, require_inward_operator, require_packer
 ├── routers/             # APIRouter per module — HTTP wiring only, no logic
+│   └── auth.py          # /api/auth/* endpoints
 └── utils/
     └── request.py       # get_client_ip(request) — centralised proxy-aware IP extraction
 ```
@@ -95,7 +115,7 @@ app/
 
 ## Auth System (Approved Design — June 18 2026)
 
-The auth redesign document (`C:\Users\rudra\OneDrive\Desktop\HEXALOG POLICIES\BRD AND PRDs\2026-06-18-auth-redesign-design.md`) supersedes the architecture overview's auth section. Implement this design, not the original `tokens_invalidated_at` approach.
+The auth redesign document (`C:\Users\rudra\OneDrive\Desktop\HEXALOG POLICIES\BRD AND PRDs\2026-06-18-auth-redesign-design.md`) supersedes the architecture overview's auth section.
 
 **`users.tokens_invalidated_at` does not exist in the schema. Do not add it.**
 
@@ -113,18 +133,34 @@ The auth redesign document (`C:\Users\rudra\OneDrive\Desktop\HEXALOG POLICIES\BR
 
 Keys are `sub`, `org`, `session_id` — **not** `user_id` / `organisation_id`. Always decode with `algorithms=["HS256"]` explicitly. Reject `alg:none` unconditionally.
 
+### `get_current_user` — what it actually does
+
+One DB SELECT per authenticated request (the `User` row only, for `is_active` and `/me` data). Roles are read from JWT claims — **no second DB query for roles**. Role changes propagate after the next access token refresh (~15 min).
+
+```python
+# 1. Require Bearer header (raise 401 if missing)
+# 2. decode_access_token() → validate sig + exp
+# 3. Extract user_id (int(payload["sub"])), organisation_id (int(payload["org"])),
+#    session_id (payload["session_id"]), roles ([UserRoleEnum(r) for r in payload["roles"]])
+# 4. SELECT User WHERE id = user_id
+# 5. Raise 401 if user is None or not user.is_active
+# 6. Return CurrentUser(user_id, organisation_id, session_id, roles, full_name, email, is_active)
+```
+
+`CurrentUser` is a dataclass (not a Pydantic model). It carries `session_id` — needed by `logout-all` to exclude the current session when revoking others.
+
 ### Auth endpoints
 
-| Method | Path | Auth required | Notes |
-|--------|------|--------------|-------|
-| POST | `/api/auth/login` | None | Returns access token in body; refresh token in cookie |
-| POST | `/api/auth/refresh` | Cookie | `SELECT ... FOR UPDATE` on session row |
-| POST | `/api/auth/logout` | Cookie | Revokes session; clears cookie |
-| POST | `/api/auth/logout-all` | Bearer + Cookie | Revokes all other sessions for user |
-| POST | `/api/auth/switch-organisation` | Bearer | New session for new org |
-| GET | `/api/auth/me` | Bearer | No extra DB query — served from CurrentUser |
-| DELETE | `/api/admin/sessions/:id` | Bearer (admin) | Force-revoke a session |
-| DELETE | `/api/admin/users/:id/sessions` | Bearer (admin) | Revoke all sessions for a user |
+| Method | Path | Auth required | Status |
+|--------|------|--------------|--------|
+| POST | `/api/auth/login` | None | ✅ implemented |
+| POST | `/api/auth/refresh` | Cookie | ✅ implemented |
+| POST | `/api/auth/logout` | Cookie | ✅ implemented |
+| POST | `/api/auth/logout-all` | Bearer + Cookie | ✅ implemented |
+| GET | `/api/auth/me` | Bearer | ✅ implemented |
+| POST | `/api/auth/switch-organisation` | Bearer | ⏳ pending (Item 7) |
+| DELETE | `/api/admin/sessions/:id` | Bearer (admin) | ⏳ pending (Item 8) |
+| DELETE | `/api/admin/users/:id/sessions` | Bearer (admin) | ⏳ pending (Item 8) |
 
 ### Session invalidation events (all set `sessions.revoked_at` in same transaction)
 
@@ -133,11 +169,13 @@ Keys are `sub`, `org`, `session_id` — **not** `user_id` / `organisation_id`. A
 - Token theft detected (old rotated token replayed after grace window)
 - User deactivated (`is_active=False`) — must also revoke all active sessions in same transaction
 - Password changed — revokes all sessions except the one making the change
+- **Inactivity timeout** — revokes session but **currently missing the audit log call** (deferred gap)
 
 ### Brute force protection
 
 - **Per-IP:** `login_attempts` table, sliding window, max `LOGIN_RATE_LIMIT_PER_MINUTE=5`. → 429.
 - **Per-account:** `users.failed_attempts` + `users.locked_until`. Lock after `LOGIN_MAX_FAILURES=10` consecutive failures for `LOGIN_LOCKOUT_MINUTES=15`. Lockout check runs before password verification.
+- Both rate-limit and failed-attempt writes use `_side_effect_session_factory` — a separate `AsyncSession` that commits independently from the main transaction, so they persist even when the main transaction rolls back.
 - All failures return `401 "Invalid credentials"` — no message distinguishes locked/wrong-password/not-found.
 
 ---
@@ -165,7 +203,7 @@ RETURNING last_value
 Never use `SELECT FOR UPDATE` for counter generation.
 
 ### scanned_qty invariant
-`inward_boxes.scanned_qty` must equal `COUNT(*) FROM inward_scans WHERE inward_box_id = ? AND is_deleted = false`. The application service layer maintains this; no DB trigger enforces it. Always increment/decrement `scanned_qty` in the same transaction as the scan INSERT or soft-delete.
+`inward_boxes.scanned_qty` must equal `COUNT(*) FROM inward_scans WHERE inward_box_id = ? AND is_deleted = false`. Always increment/decrement `scanned_qty` in the same transaction as the scan INSERT or soft-delete.
 
 ### Multi-tenancy
 Every query on an org-scoped table must include `WHERE organisation_id = :org_id`. The `organisation_id` comes from the JWT (`org` claim), never from the request body.
@@ -181,6 +219,40 @@ Never appears in any API response, any `after_data` or `before_data` in `audit_l
 - Set `expire_on_commit=False` on `async_sessionmaker` — accessing attributes after `await session.commit()` raises `MissingGreenlet` otherwise.
 - All enums: `class XEnum(str, enum.Enum)` — compatible with Pydantic v2 and `Enum(native_enum=True)`.
 - `selectinload` does not accept `.where()` in SQLAlchemy 2.0. Load a relationship first, then run a separate explicit `select()` filtered by org when you need org-scoped role loading.
+- **Multi-FK disambiguation:** When a child table has two FKs pointing back to the same parent table (e.g. `Session` has both `user_id` and `revoked_by`, both referencing `users.id`), the parent-side `relationship()` must declare `foreign_keys` explicitly — use string form since the child class may not yet be defined: `foreign_keys="[Session.user_id]"`. Omitting this raises `InvalidRequestError: Could not determine join condition` at mapper configuration time.
+
+---
+
+## Testing Infrastructure
+
+### Test separation
+
+| Directory | DB required | When to run |
+|-----------|-------------|-------------|
+| `tests/unit/` | No | Always — fast, run before every commit |
+| `tests/integration/` | Yes (`TEST_DATABASE_URL`) | When PostgreSQL is available |
+
+### pytest configuration (`pyproject.toml`)
+- `asyncio_mode = "auto"` — all `async def test_*` functions are auto-collected as coroutines. **Do not add `@pytest.mark.asyncio`** (redundant, but harmless).
+- `asyncio_default_fixture_loop_scope = "session"` — session-scoped async fixtures share one event loop.
+
+### Integration test fixtures (`tests/conftest.py`)
+All fixtures are function-scoped unless noted. The `db` session rolls back after each test.
+
+| Fixture | Type | Notes |
+|---------|------|-------|
+| `async_engine` | session | Creates all tables once; drops all on teardown |
+| `db` | function | `AsyncSession`; rolls back after each test |
+| `client` | function | httpx `AsyncClient` via ASGI transport; overrides `get_db` with test `db` |
+| `org` | function | `Organisation(name="Test Org", is_active=True)` |
+| `admin_user` | function | email `admin@test.com`, password `AdminPass1!`, role `admin` in `org` |
+| `packer_user` | function | email `packer@test.com`, password `PackerPass1!`, role `packer` in `org` |
+| `inactive_user` | function | email `inactive@test.com`, password `InactivePass1!`, `is_active=False` |
+
+### `_side_effect_session_factory` pattern
+`_check_ip_rate_limit` and `_record_failed_attempt` in `auth_service.py` open their own sessions that commit independently. The integration conftest (`tests/integration/conftest.py`) has a session-scoped `autouse=True` fixture that patches `auth_service._side_effect_session_factory` to point at the test engine, so these writes land in the test database rather than the main one.
+
+In tests, the `admin_user` row is in an uncommitted transaction (the `db` fixture uses rollback, not commit). Side-effect sessions use `READ COMMITTED` isolation and cannot see the uncommitted row — so `_record_failed_attempt` UPDATEs affect 0 rows during tests (silent no-op, which is correct for unit-level isolation).
 
 ---
 
@@ -213,7 +285,7 @@ require_inward_operator    # inward_operator OR admin
 require_packer             # packer OR admin
 ```
 
-All role checks are server-side in the service/dependency layer. Admins implicitly pass every role check.
+All role checks are server-side in `app/dependencies/auth.py`. Admins implicitly pass every role check.
 
 ---
 
@@ -229,15 +301,17 @@ All role checks are server-side in the service/dependency layer. Admins implicit
 | Redis | Explicitly rejected for V1. No session store, no cache, no queue. |
 | Concurrent scan allocation | Retry loop (max 5), not pessimistic lock |
 | Inactivity timeout | `SESSION_INACTIVITY_MINUTES=480` (8 hours) — confirmed by Arpit 2026-06-19. |
+| Roles in JWT | Roles are embedded in the JWT at login/refresh time. `get_current_user` reads them from the token — no DB query for roles. Changes propagate after the next token refresh (~15 min). |
 
 ---
 
-## Open Items Before Writing Code
+## Open Items
 
 | Item | Blocks |
 |------|--------|
 | Confirm `APP_TIMEZONE=Asia/Kolkata` for Inscan Number date generation | Phase 1 |
 | Label printer model + exact label dimensions (A6 assumed) | Phase 2 |
+| Add audit log to `refresh_session()` inactivity timeout case | Auth PR merge |
 
 ---
 

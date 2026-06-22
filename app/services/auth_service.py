@@ -23,6 +23,12 @@ log = structlog.get_logger(__name__)
 
 _INVALID_CREDENTIALS = "Invalid credentials"
 
+# Session factory used by _check_ip_rate_limit and _record_failed_attempt.
+# These helpers commit independently from the main transaction so their writes
+# persist even when the caller rolls back. Tests override this name to point at
+# the test database engine instead of the main one.
+_side_effect_session_factory = AsyncSessionLocal
+
 
 # ── Return types ──────────────────────────────────────────────────────────────
 
@@ -67,7 +73,7 @@ async def _check_ip_rate_limit(ip_address: str | None) -> None:
         return
 
     window_start = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
-    async with AsyncSessionLocal() as rate_session:
+    async with _side_effect_session_factory() as rate_session:
         result = await rate_session.execute(
             text("""
                 INSERT INTO login_attempts (ip_address, window_start, attempt_count, created_at)
@@ -96,7 +102,7 @@ async def _record_failed_attempt(user_id: int, current_failed_attempts: int) -> 
     now = datetime.now(tz=timezone.utc)
     new_count = current_failed_attempts + 1
 
-    async with AsyncSessionLocal() as fa_session:
+    async with _side_effect_session_factory() as fa_session:
         if new_count >= settings.LOGIN_MAX_FAILURES:
             locked_until = now + timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES)
             await fa_session.execute(
@@ -236,7 +242,9 @@ async def login(
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
 
-async def refresh_session(db: AsyncSession, raw_token: str) -> RefreshResult:
+async def refresh_session(
+    db: AsyncSession, raw_token: str, *, ip_address: str | None = None
+) -> RefreshResult:
     """Rotate the refresh token and issue a new access token. 5-case flow per June 18 design."""
     token_hash = _hash_refresh_token(raw_token)
     now = datetime.now(tz=timezone.utc)
@@ -288,7 +296,7 @@ async def refresh_session(db: AsyncSession, raw_token: str) -> RefreshResult:
             resource_type="sessions",
             user_id=prev_session.user_id,
             organisation_id=prev_session.organisation_id,
-            ip_address=None,
+            ip_address=ip_address,
         )
         await db.commit()
         raise HTTPException(
@@ -346,6 +354,16 @@ async def refresh_session(db: AsyncSession, raw_token: str) -> RefreshResult:
         organisation_id=session.organisation_id,
         roles=roles,
         session_id=str(session.id),
+    )
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="auth.token_refresh",
+        resource_type="sessions",
+        user_id=session.user_id,
+        organisation_id=session.organisation_id,
+        ip_address=ip_address,
     )
 
     await db.commit()

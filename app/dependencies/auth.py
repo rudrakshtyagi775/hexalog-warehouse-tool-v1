@@ -29,7 +29,17 @@ async def get_current_user(
         )
 
     payload = decode_access_token(credentials.credentials)
-    user_id = int(payload["sub"])
+
+    try:
+        user_id = int(payload["sub"])
+        organisation_id = int(payload["org"])
+        session_id = payload["session_id"]
+        roles = [UserRoleEnum(r) for r in payload.get("roles", [])]
+    except (ValueError, KeyError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -40,12 +50,10 @@ async def get_current_user(
             detail="Invalid credentials",
         )
 
-    roles = [UserRoleEnum(r) for r in payload.get("roles", [])]
-
     return CurrentUser(
         user_id=user_id,
-        organisation_id=int(payload["org"]),
-        session_id=payload["session_id"],
+        organisation_id=organisation_id,
+        session_id=session_id,
         roles=roles,
         full_name=user.full_name,
         email=user.email,

@@ -35,11 +35,18 @@ class User(TimestampMixin, Base):
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
+    # foreign_keys required on the parent side: each child table has a second FK
+    # back to users (created_by / assigned_by / revoked_by) that would make the
+    # join condition ambiguous without disambiguation.
     user_organisations: Mapped[list["UserOrganisation"]] = relationship(
-        back_populates="user", lazy="noload"
+        back_populates="user", lazy="noload", foreign_keys="[UserOrganisation.user_id]"
     )
-    roles: Mapped[list["UserRole"]] = relationship(back_populates="user", lazy="noload")
-    sessions: Mapped[list["Session"]] = relationship(back_populates="user", lazy="noload")
+    roles: Mapped[list["UserRole"]] = relationship(
+        back_populates="user", lazy="noload", foreign_keys="[UserRole.user_id]"
+    )
+    sessions: Mapped[list["Session"]] = relationship(
+        back_populates="user", lazy="noload", foreign_keys="[Session.user_id]"
+    )
 
 
 class UserOrganisation(Base):
