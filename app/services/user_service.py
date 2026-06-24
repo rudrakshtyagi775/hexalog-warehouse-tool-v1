@@ -10,17 +10,18 @@ Two-query pattern for list operations avoids N+1:
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import AuditModuleEnum, UserRoleEnum  # noqa: F401 (used by later tasks)
 from app.models.user import User, UserOrganisation, UserRole
+from app.models.user import Session as SessionModel
 from app.schemas.user import UserResponse, UserRoleInfo
 from app.services.audit_service import write_audit_log
 from app.services.password_service import hash_password
-from app.services.auth_service import revoke_user_sessions
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -206,13 +207,18 @@ async def update_user(
     if is_active is not None:
         user.is_active = is_active
         if is_active is False:
-            # Revoke all active sessions in the same transaction (NO tokens_invalidated_at)
-            await revoke_user_sessions(
-                db,
-                target_user_id=user_id,
-                admin_user_id=current_user_id,
-                admin_org_id=org_id,
-                ip_address=ip_address,
+            # Inline session revocation — keeps everything in ONE transaction.
+            # revoke_user_sessions() from auth_service calls db.commit() internally,
+            # which would split deactivation + revocation across two transactions.
+            now = datetime.now(timezone.utc)
+            await db.execute(
+                sql_update(SessionModel)
+                .where(
+                    SessionModel.user_id == user_id,
+                    SessionModel.organisation_id == org_id,
+                    SessionModel.revoked_at.is_(None),
+                )
+                .values(revoked_at=now, revoked_by=current_user_id, revoke_reason="admin_deactivation")
             )
 
     await write_audit_log(
