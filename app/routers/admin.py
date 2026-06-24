@@ -11,7 +11,7 @@ from app.schemas.admin import (
     UpdateOrganisationRequest,
 )
 from app.schemas.common import MessageResponse
-from app.schemas.user import CreateUserRequest, UpdateUserRequest, UserResponse
+from app.schemas.user import AssignRoleRequest, CreateUserRequest, UpdateUserRequest, UserResponse
 from app.services.auth_service import revoke_session, revoke_user_sessions
 from app.services.organisation_service import (
     create_organisation,
@@ -19,7 +19,7 @@ from app.services.organisation_service import (
     list_user_organisations,
     update_organisation,
 )
-from app.services.user_service import create_user, list_org_users, update_user
+from app.services.user_service import assign_role, create_user, list_org_users, update_user
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -208,5 +208,28 @@ async def update_user_endpoint(
         full_name=body.full_name,
         is_active=body.is_active,
         current_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.post(
+    "/users/{user_id}/roles",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def assign_role_endpoint(
+    user_id: int,
+    body: AssignRoleRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Assign a role to a user within the admin's current organisation."""
+    return await assign_role(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        role=body.role,
+        assigning_user_id=current_user.user_id,
         ip_address=get_client_ip(request),
     )

@@ -236,3 +236,49 @@ async def update_user(
 
     await db.commit()
     return await _build_user_response(db, user.id, org_id)
+
+
+async def assign_role(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    org_id: int,
+    role: UserRoleEnum,
+    assigning_user_id: int,
+    ip_address: str | None,
+) -> UserResponse:
+    user = await _get_user_in_org(db, user_id=user_id, org_id=org_id)
+
+    existing = await db.execute(
+        select(UserRole).where(
+            UserRole.user_id == user_id,
+            UserRole.organisation_id == org_id,
+            UserRole.role == role,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Role already assigned to this user")
+
+    new_role = UserRole(
+        user_id=user_id,
+        organisation_id=org_id,
+        role=role,
+        assigned_by=assigning_user_id,
+    )
+    db.add(new_role)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="admin.user_role.assign",
+        resource_type="user_roles",
+        resource_id=new_role.id,
+        user_id=assigning_user_id,
+        organisation_id=org_id,
+        ip_address=ip_address,
+        after_data={"user_id": user_id, "role": role.value},
+    )
+
+    await db.commit()
+    return await _build_user_response(db, user.id, org_id)

@@ -397,3 +397,99 @@ async def test_update_user_non_admin_returns_403(client, packer_user, org, db):
 async def test_update_user_no_auth_returns_401(client):
     resp = await client.patch(f"{USERS_URL}/1", json={"full_name": "X"})
     assert resp.status_code == 401
+
+
+# ── POST /api/admin/users/{id}/roles ─────────────────────────────────────────
+
+async def test_assign_role_success(client, admin_user, org, db):
+    """Admin can assign a new role to a user in their org."""
+    target = await _create_user_in_org(db, org=org, email="assignrole@test.com", password="Assign1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/roles",
+        json={"role": "packer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    role_names = [r["role"] for r in resp.json()["roles"]]
+    assert "packer" in role_names
+
+
+async def test_assign_role_duplicate_returns_409(client, admin_user, org, db):
+    """Assigning a role the user already has returns 409."""
+    target = await _create_user_in_org(
+        db, org=org, email="dup_role@test.com", password="DupRole1!", roles=[UserRoleEnum.packer]
+    )
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/roles",
+        json={"role": "packer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 409
+
+
+async def test_assign_role_writes_audit_log(client, admin_user, org, db):
+    """POST /roles writes audit_logs with action admin.user_role.assign."""
+    target = await _create_user_in_org(db, org=org, email="audit_role@test.com", password="AuditRole1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/roles",
+        json={"role": "inward_operator"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "admin.user_role.assign",
+            AuditLog.user_id == admin_user.id,
+            AuditLog.organisation_id == org.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit.resource_type == "user_roles"
+    assert audit.after_data["user_id"] == target.id
+    assert audit.after_data["role"] == "inward_operator"
+
+
+async def test_assign_role_user_not_in_org_returns_404(client, admin_user, org, db):
+    """Targeting a user from another org returns 404."""
+    other_org = Organisation(name="Role Isolation", is_active=True)
+    db.add(other_org)
+    await db.flush()
+    outsider = User(email="roleout@test.com", full_name="Out", password_hash="x", is_active=True)
+    db.add(outsider)
+    await db.flush()
+    db.add(UserOrganisation(user_id=outsider.id, organisation_id=other_org.id, created_by=outsider.id))
+    await db.flush()
+
+    token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.post(
+        f"{USERS_URL}/{outsider.id}/roles",
+        json={"role": "packer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_assign_role_non_admin_returns_403(client, packer_user, org, db):
+    target = await _create_user_in_org(db, org=org, email="target_r@test.com", password="Target1!")
+    token = await _login(client, packer_user, org, "PackerPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/roles",
+        json={"role": "packer"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_assign_role_no_auth_returns_401(client):
+    resp = await client.post(f"{USERS_URL}/1/roles", json={"role": "packer"})
+    assert resp.status_code == 401
