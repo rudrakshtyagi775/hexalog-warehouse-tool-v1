@@ -336,6 +336,8 @@ async def test_update_user_writes_audit_log(client, admin_user, org, db):
     audit = result.scalar_one()
     assert audit.before_data["full_name"] == "Original Name"
     assert audit.after_data["full_name"] == "Updated Name"
+    assert "is_active" in audit.before_data
+    assert "is_active" in audit.after_data
     assert "password_hash" not in (audit.before_data or {})
     assert "password_hash" not in (audit.after_data or {})
 
