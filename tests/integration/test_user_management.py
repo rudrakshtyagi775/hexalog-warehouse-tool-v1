@@ -621,7 +621,7 @@ async def test_password_reset_success(client, admin_user, org, db):
     assert resp.status_code == 200
     body = resp.json()
     assert "message" in body
-    assert "password" in body["message"].lower() or "reset" in body["message"].lower()
+    assert body["message"] == "Password reset successfully"
 
 
 async def test_password_reset_new_password_works_for_login(client, admin_user, org, db):
