@@ -1,12 +1,26 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies.auth import CurrentUser, require_admin
+from app.schemas.admin import (
+    CreateOrganisationRequest,
+    OrganisationResponse,
+    UpdateOrganisationRequest,
+)
 from app.schemas.common import MessageResponse
+from app.schemas.user import AdminPasswordResetRequest, AssignRoleRequest, CreateUserRequest, UpdateUserRequest, UserResponse
 from app.services.auth_service import revoke_session, revoke_user_sessions
+from app.services.organisation_service import (
+    create_organisation,
+    get_organisation,
+    list_user_organisations,
+    update_organisation,
+)
+from app.models.enums import UserRoleEnum
+from app.services.user_service import admin_password_reset, assign_role, create_user, list_org_users, revoke_role, update_user
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -52,3 +66,218 @@ async def revoke_user_sessions_endpoint(
         ip_address=get_client_ip(request),
     )
     return MessageResponse(message=f"Revoked {revoked} session(s)")
+
+
+# ── Organisation management ───────────────────────────────────────────────────
+# Route ordering is significant: /organisations/me MUST be declared before any
+# /organisations/{id} route. FastAPI resolves in registration order and would
+# otherwise treat the literal "me" as an integer path parameter, shadowing this
+# endpoint. Keep all /me routes above any /{id} routes in this section.
+
+@router.get(
+    "/organisations/me",
+    response_model=OrganisationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_current_organisation(
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> OrganisationResponse:
+    """Return the organisation currently active in the admin's JWT."""
+    org = await get_organisation(db, org_id=current_user.organisation_id)
+    if org is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organisation not found",
+        )
+    return org
+
+
+@router.patch(
+    "/organisations/me",
+    response_model=OrganisationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_current_organisation(
+    body: UpdateOrganisationRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> OrganisationResponse:
+    """Update the name and/or active status of the current organisation."""
+    org = await update_organisation(
+        db,
+        org_id=current_user.organisation_id,
+        name=body.name,
+        is_active=body.is_active,
+        admin_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return org
+
+
+@router.get(
+    "/organisations",
+    response_model=list[OrganisationResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_organisations(
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[OrganisationResponse]:
+    """List all organisations the requesting admin belongs to."""
+    return await list_user_organisations(db, user_id=current_user.user_id)
+
+
+@router.post(
+    "/organisations",
+    response_model=OrganisationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_organisation_endpoint(
+    body: CreateOrganisationRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> OrganisationResponse:
+    """Create a new organisation. The requesting admin is automatically enrolled as its admin."""
+    org = await create_organisation(
+        db,
+        name=body.name,
+        creating_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return org
+
+
+# ── User management ───────────────────────────────────────────────────────────
+
+@router.get(
+    "/users",
+    response_model=list[UserResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_users_endpoint(
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[UserResponse]:
+    """List all users in the admin's current organisation."""
+    return await list_org_users(db, org_id=current_user.organisation_id)
+
+
+@router.post(
+    "/users",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_user_endpoint(
+    body: CreateUserRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Create a new user and add them to the admin's current organisation."""
+    return await create_user(
+        db,
+        email=body.email,
+        full_name=body.full_name,
+        password=body.password,
+        roles=body.roles,
+        org_id=current_user.organisation_id,
+        creating_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.patch(
+    "/users/{user_id}",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_user_endpoint(
+    user_id: int,
+    body: UpdateUserRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Update a user's name and/or active status. Deactivation revokes all sessions."""
+    return await update_user(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        full_name=body.full_name,
+        is_active=body.is_active,
+        current_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.post(
+    "/users/{user_id}/roles",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def assign_role_endpoint(
+    user_id: int,
+    body: AssignRoleRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Assign a role to a user within the admin's current organisation."""
+    return await assign_role(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        role=body.role,
+        assigning_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.delete(
+    "/users/{user_id}/roles/{role}",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def revoke_role_endpoint(
+    user_id: int,
+    role: UserRoleEnum,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Revoke a role from a user. Hard-deletes the user_roles row."""
+    return await revoke_role(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        role=role,
+        revoking_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.post(
+    "/users/{user_id}/password-reset",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def admin_password_reset_endpoint(
+    user_id: int,
+    body: AdminPasswordResetRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Admin resets a user's password and revokes all their active sessions."""
+    await admin_password_reset(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        new_password=body.new_password,
+        admin_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return MessageResponse(message="Password reset successfully")
