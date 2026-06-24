@@ -11,7 +11,7 @@ from app.schemas.admin import (
     UpdateOrganisationRequest,
 )
 from app.schemas.common import MessageResponse
-from app.schemas.user import CreateUserRequest, UserResponse
+from app.schemas.user import CreateUserRequest, UpdateUserRequest, UserResponse
 from app.services.auth_service import revoke_session, revoke_user_sessions
 from app.services.organisation_service import (
     create_organisation,
@@ -19,7 +19,7 @@ from app.services.organisation_service import (
     list_user_organisations,
     update_organisation,
 )
-from app.services.user_service import create_user, list_org_users
+from app.services.user_service import create_user, list_org_users, update_user
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -184,5 +184,29 @@ async def create_user_endpoint(
         roles=body.roles,
         org_id=current_user.organisation_id,
         creating_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.patch(
+    "/users/{user_id}",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def update_user_endpoint(
+    user_id: int,
+    body: UpdateUserRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Update a user's name and/or active status. Deactivation revokes all sessions."""
+    return await update_user(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        full_name=body.full_name,
+        is_active=body.is_active,
+        current_user_id=current_user.user_id,
         ip_address=get_client_ip(request),
     )

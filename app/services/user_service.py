@@ -20,6 +20,7 @@ from app.models.user import User, UserOrganisation, UserRole
 from app.schemas.user import UserResponse, UserRoleInfo
 from app.services.audit_service import write_audit_log
 from app.services.password_service import hash_password
+from app.services.auth_service import revoke_user_sessions
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -171,6 +172,60 @@ async def create_user(
             "is_active": True,
             "roles": [r.value for r in roles],
         },
+    )
+
+    await db.commit()
+    return await _build_user_response(db, user.id, org_id)
+
+
+async def update_user(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    org_id: int,
+    full_name: str | None,
+    is_active: bool | None,
+    current_user_id: int,
+    ip_address: str | None,
+) -> UserResponse:
+    user = await _get_user_in_org(db, user_id=user_id, org_id=org_id)
+
+    if full_name is None and is_active is None:
+        return await _build_user_response(db, user.id, org_id)
+
+    if is_active is False and user_id == current_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admin cannot deactivate their own account",
+        )
+
+    before_data = {"full_name": user.full_name, "is_active": user.is_active}
+
+    if full_name is not None:
+        user.full_name = full_name
+    if is_active is not None:
+        user.is_active = is_active
+        if is_active is False:
+            # Revoke all active sessions in the same transaction (NO tokens_invalidated_at)
+            await revoke_user_sessions(
+                db,
+                target_user_id=user_id,
+                admin_user_id=current_user_id,
+                admin_org_id=org_id,
+                ip_address=ip_address,
+            )
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="admin.user.update",
+        resource_type="users",
+        resource_id=user.id,
+        user_id=current_user_id,
+        organisation_id=org_id,
+        ip_address=ip_address,
+        before_data=before_data,
+        after_data={"full_name": user.full_name, "is_active": user.is_active},
     )
 
     await db.commit()

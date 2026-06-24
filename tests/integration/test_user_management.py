@@ -227,3 +227,171 @@ async def test_create_user_non_admin_returns_403(client, packer_user, org, db):
 async def test_create_user_no_auth_returns_401(client):
     resp = await client.post(USERS_URL, json={"email": "x@test.com", "full_name": "X", "password": "XPassword1!"})
     assert resp.status_code == 401
+
+
+# ── PATCH /api/admin/users/{id} ───────────────────────────────────────────────
+
+async def test_update_user_full_name_success(client, admin_user, org, db):
+    """Admin can rename another user."""
+    target = await _create_user_in_org(db, org=org, email="rename@test.com", password="Rename1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={"full_name": "Renamed User"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["full_name"] == "Renamed User"
+    assert resp.json()["id"] == target.id
+
+
+async def test_update_user_deactivate_success(client, admin_user, org, db):
+    """Admin can deactivate another user."""
+    target = await _create_user_in_org(db, org=org, email="deactivate@test.com", password="Deact1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["is_active"] is False
+
+
+async def test_update_user_deactivate_revokes_sessions(client, admin_user, org, db):
+    """Deactivating a user revokes all their active sessions in the same transaction."""
+    from sqlalchemy import select as sa_select
+    from app.models.user import Session as SessionModel
+
+    target = await _create_user_in_org(
+        db, org=org, email="revoke_sess@test.com", password="Revoke1!",
+        roles=[UserRoleEnum.packer],
+    )
+    # Log in as target to create a session
+    target_token_resp = await client.post(
+        LOGIN_URL,
+        json={"email": "revoke_sess@test.com", "password": "Revoke1!", "organisation_id": org.id},
+    )
+    assert target_token_resp.status_code == 200
+
+    token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    # Verify all sessions for target user are revoked
+    result = await db.execute(
+        sa_select(SessionModel).where(
+            SessionModel.user_id == target.id,
+            SessionModel.revoked_at.is_(None),
+        )
+    )
+    active_sessions = result.scalars().all()
+    assert len(active_sessions) == 0
+
+
+async def test_update_user_admin_cannot_deactivate_self_returns_400(client, admin_user, org, db):
+    """Admin cannot deactivate their own account."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{admin_user.id}",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"].lower()
+    assert "yourself" in detail or "own" in detail or "cannot" in detail
+
+
+async def test_update_user_writes_audit_log(client, admin_user, org, db):
+    """PATCH writes an audit_logs row with before/after data."""
+    target = await _create_user_in_org(
+        db, org=org, email="auditpatch@test.com", password="AuditPatch1!", full_name="Original Name"
+    )
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={"full_name": "Updated Name"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "admin.user.update",
+            AuditLog.resource_id == target.id,
+            AuditLog.user_id == admin_user.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit.before_data["full_name"] == "Original Name"
+    assert audit.after_data["full_name"] == "Updated Name"
+    assert "password_hash" not in (audit.before_data or {})
+    assert "password_hash" not in (audit.after_data or {})
+
+
+async def test_update_user_not_in_org_returns_404(client, admin_user, org, db):
+    """Targeting a user from a different org returns 404."""
+    other_org = Organisation(name="Isolation Org", is_active=True)
+    db.add(other_org)
+    await db.flush()
+    outsider = User(
+        email="outsider2@test.com", full_name="Out", password_hash="x", is_active=True,
+    )
+    db.add(outsider)
+    await db.flush()
+    db.add(UserOrganisation(user_id=outsider.id, organisation_id=other_org.id, created_by=outsider.id))
+    await db.flush()
+
+    token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.patch(
+        f"{USERS_URL}/{outsider.id}",
+        json={"full_name": "Hacked"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 404
+
+
+async def test_update_user_empty_body_is_noop(client, admin_user, org, db):
+    """PATCH with empty body returns 200 with unchanged data."""
+    target = await _create_user_in_org(
+        db, org=org, email="noop@test.com", password="Noop1!", full_name="Noop User"
+    )
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["full_name"] == "Noop User"
+
+
+async def test_update_user_non_admin_returns_403(client, packer_user, org, db):
+    target = await _create_user_in_org(db, org=org, email="target403@test.com", password="Target1!")
+    token = await _login(client, packer_user, org, "PackerPass1!")
+
+    resp = await client.patch(
+        f"{USERS_URL}/{target.id}",
+        json={"full_name": "Changed"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_update_user_no_auth_returns_401(client):
+    resp = await client.patch(f"{USERS_URL}/1", json={"full_name": "X"})
+    assert resp.status_code == 401
