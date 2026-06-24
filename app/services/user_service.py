@@ -283,6 +283,46 @@ async def revoke_role(
     return await _build_user_response(db, user.id, org_id)
 
 
+async def admin_password_reset(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    org_id: int,
+    new_password: str,
+    admin_user_id: int,
+    ip_address: str | None,
+) -> None:
+    user = await _get_user_in_org(db, user_id=user_id, org_id=org_id)
+
+    user.password_hash = _hash_password(new_password)
+
+    # Revoke all active sessions for this user in this org (same transaction)
+    now = datetime.now(timezone.utc)
+    await db.execute(
+        sql_update(SessionModel)
+        .where(
+            SessionModel.user_id == user_id,
+            SessionModel.organisation_id == org_id,
+            SessionModel.revoked_at.is_(None),
+        )
+        .values(revoked_at=now, revoked_by=admin_user_id, revoke_reason="password_reset")
+    )
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="admin.user.password_reset",
+        resource_type="users",
+        resource_id=user.id,
+        user_id=admin_user_id,
+        organisation_id=org_id,
+        ip_address=ip_address,
+        after_data={"user_id": user.id},
+    )
+
+    await db.commit()
+
+
 async def assign_role(
     db: AsyncSession,
     *,

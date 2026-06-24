@@ -11,7 +11,7 @@ from app.schemas.admin import (
     UpdateOrganisationRequest,
 )
 from app.schemas.common import MessageResponse
-from app.schemas.user import AssignRoleRequest, CreateUserRequest, UpdateUserRequest, UserResponse
+from app.schemas.user import AdminPasswordResetRequest, AssignRoleRequest, CreateUserRequest, UpdateUserRequest, UserResponse
 from app.services.auth_service import revoke_session, revoke_user_sessions
 from app.services.organisation_service import (
     create_organisation,
@@ -20,7 +20,7 @@ from app.services.organisation_service import (
     update_organisation,
 )
 from app.models.enums import UserRoleEnum
-from app.services.user_service import assign_role, create_user, list_org_users, revoke_role, update_user
+from app.services.user_service import admin_password_reset, assign_role, create_user, list_org_users, revoke_role, update_user
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -257,3 +257,27 @@ async def revoke_role_endpoint(
         revoking_user_id=current_user.user_id,
         ip_address=get_client_ip(request),
     )
+
+
+@router.post(
+    "/users/{user_id}/password-reset",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def admin_password_reset_endpoint(
+    user_id: int,
+    body: AdminPasswordResetRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """Admin resets a user's password and revokes all their active sessions."""
+    await admin_password_reset(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        new_password=body.new_password,
+        admin_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return MessageResponse(message="Password reset successfully")

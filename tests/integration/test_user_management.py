@@ -603,3 +603,137 @@ async def test_revoke_role_non_admin_returns_403(client, packer_user, org, db):
 async def test_revoke_role_no_auth_returns_401(client):
     resp = await client.delete(f"{USERS_URL}/1/roles/packer")
     assert resp.status_code == 401
+
+
+# ── POST /api/admin/users/{id}/password-reset ─────────────────────────────────
+
+async def test_password_reset_success(client, admin_user, org, db):
+    """Admin can reset another user's password; returns success message."""
+    target = await _create_user_in_org(db, org=org, email="pwreset@test.com", password="OldPass1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/password-reset",
+        json={"new_password": "NewPass2!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "message" in body
+    assert "password" in body["message"].lower() or "reset" in body["message"].lower()
+
+
+async def test_password_reset_new_password_works_for_login(client, admin_user, org, db):
+    """After reset, user can log in with the new password."""
+    target = await _create_user_in_org(db, org=org, email="newpwlogin@test.com", password="OldPass1!")
+    admin_token = await _login(client, admin_user, org, "AdminPass1!")
+
+    reset_resp = await client.post(
+        f"{USERS_URL}/{target.id}/password-reset",
+        json={"new_password": "BrandNew2!"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert reset_resp.status_code == 200
+
+    login_resp = await client.post(
+        LOGIN_URL,
+        json={"email": "newpwlogin@test.com", "password": "BrandNew2!", "organisation_id": org.id},
+    )
+    assert login_resp.status_code == 200
+
+
+async def test_password_reset_revokes_sessions(client, admin_user, org, db):
+    """Password reset revokes all sessions for the target user in the org."""
+    from sqlalchemy import select as sa_select
+    from app.models.user import Session as SessionModel
+
+    target = await _create_user_in_org(
+        db, org=org, email="invalidate@test.com", password="OldPass1!",
+        roles=[UserRoleEnum.packer],
+    )
+    # Create a real session for target
+    await client.post(
+        LOGIN_URL,
+        json={"email": "invalidate@test.com", "password": "OldPass1!", "organisation_id": org.id},
+    )
+
+    admin_token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/password-reset",
+        json={"new_password": "FreshPass2!"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+
+    result = await db.execute(
+        sa_select(SessionModel).where(
+            SessionModel.user_id == target.id,
+            SessionModel.organisation_id == org.id,
+            SessionModel.revoked_at.is_(None),
+        )
+    )
+    assert len(result.scalars().all()) == 0
+
+
+async def test_password_reset_writes_audit_log_without_hash(client, admin_user, org, db):
+    """password-reset audit log must not contain password_hash or plain password."""
+    target = await _create_user_in_org(db, org=org, email="audit_pw@test.com", password="AuditPw1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/password-reset",
+        json={"new_password": "AuditNew2!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "admin.user.password_reset",
+            AuditLog.resource_id == target.id,
+            AuditLog.user_id == admin_user.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit.resource_type == "users"
+    assert "password_hash" not in (audit.after_data or {})
+    assert "password" not in (audit.after_data or {})
+    assert "new_password" not in (audit.after_data or {})
+
+
+async def test_password_reset_user_not_in_org_returns_404(client, admin_user, org, db):
+    """Targeting a user from another org returns 404."""
+    other_org = Organisation(name="PwReset Isolation", is_active=True)
+    db.add(other_org)
+    await db.flush()
+    outsider = User(email="pwout@test.com", full_name="Out", password_hash="x", is_active=True)
+    db.add(outsider)
+    await db.flush()
+    db.add(UserOrganisation(user_id=outsider.id, organisation_id=other_org.id, created_by=outsider.id))
+    await db.flush()
+
+    token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.post(
+        f"{USERS_URL}/{outsider.id}/password-reset",
+        json={"new_password": "Hacked1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_password_reset_non_admin_returns_403(client, packer_user, org, db):
+    target = await _create_user_in_org(db, org=org, email="target_pw@test.com", password="Target1!")
+    token = await _login(client, packer_user, org, "PackerPass1!")
+
+    resp = await client.post(
+        f"{USERS_URL}/{target.id}/password-reset",
+        json={"new_password": "NotAllowed1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_password_reset_no_auth_returns_401(client):
+    resp = await client.post(f"{USERS_URL}/1/password-reset", json={"new_password": "NoAuth1!"})
+    assert resp.status_code == 401
