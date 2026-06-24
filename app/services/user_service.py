@@ -1,7 +1,7 @@
 """User management service — CRUD operations for users within an organisation.
 
 All public functions accept an AsyncSession and return Pydantic response objects.
-None of them commit — the caller (router) owns the transaction boundary.
+Read functions do not commit. Write functions own their own transaction boundary.
 
 Two-query pattern for list operations avoids N+1:
   1. Fetch all users in org via user_organisations join.
@@ -317,6 +317,7 @@ async def admin_password_reset(
         user_id=admin_user_id,
         organisation_id=org_id,
         ip_address=ip_address,
+        before_data={"user_id": user.id},
         after_data={"user_id": user.id},
     )
 

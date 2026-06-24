@@ -160,11 +160,12 @@ async def test_create_user_duplicate_email_returns_409(client, admin_user, org, 
     """Creating a user with an already-registered email returns 409."""
     token = await _login(client, admin_user, org, "AdminPass1!")
 
-    await client.post(
+    first_resp = await client.post(
         USERS_URL,
         json={"email": "dup@test.com", "full_name": "First", "password": "FirstPass1!"},
         headers={"Authorization": f"Bearer {token}"},
     )
+    assert first_resp.status_code == 201
     resp = await client.post(
         USERS_URL,
         json={"email": "dup@test.com", "full_name": "Second", "password": "SecondPass1!"},
