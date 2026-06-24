@@ -19,7 +19,8 @@ from app.services.organisation_service import (
     list_user_organisations,
     update_organisation,
 )
-from app.services.user_service import assign_role, create_user, list_org_users, update_user
+from app.models.enums import UserRoleEnum
+from app.services.user_service import assign_role, create_user, list_org_users, revoke_role, update_user
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -231,5 +232,28 @@ async def assign_role_endpoint(
         org_id=current_user.organisation_id,
         role=body.role,
         assigning_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+
+
+@router.delete(
+    "/users/{user_id}/roles/{role}",
+    response_model=UserResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def revoke_role_endpoint(
+    user_id: int,
+    role: UserRoleEnum,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Revoke a role from a user. Hard-deletes the user_roles row."""
+    return await revoke_role(
+        db,
+        user_id=user_id,
+        org_id=current_user.organisation_id,
+        role=role,
+        revoking_user_id=current_user.user_id,
         ip_address=get_client_ip(request),
     )

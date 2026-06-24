@@ -493,3 +493,113 @@ async def test_assign_role_non_admin_returns_403(client, packer_user, org, db):
 async def test_assign_role_no_auth_returns_401(client):
     resp = await client.post(f"{USERS_URL}/1/roles", json={"role": "packer"})
     assert resp.status_code == 401
+
+
+# ── DELETE /api/admin/users/{id}/roles/{role} ─────────────────────────────────
+
+async def test_revoke_role_success(client, admin_user, org, db):
+    """Admin can revoke a role from a user; role no longer appears in response."""
+    target = await _create_user_in_org(
+        db, org=org, email="revoke_role@test.com", password="RevokeRole1!", roles=[UserRoleEnum.packer]
+    )
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.delete(
+        f"{USERS_URL}/{target.id}/roles/packer",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    role_names = [r["role"] for r in resp.json()["roles"]]
+    assert "packer" not in role_names
+
+
+async def test_revoke_role_not_assigned_returns_404(client, admin_user, org, db):
+    """Revoking a role the user does not have returns 404."""
+    target = await _create_user_in_org(db, org=org, email="no_role@test.com", password="NoRole1!")
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.delete(
+        f"{USERS_URL}/{target.id}/roles/packer",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 404
+
+
+async def test_revoke_role_admin_cannot_revoke_own_admin_returns_400(client, admin_user, org, db):
+    """Admin cannot revoke their own admin role."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.delete(
+        f"{USERS_URL}/{admin_user.id}/roles/admin",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"].lower()
+    assert "own" in detail or "yourself" in detail or "cannot" in detail
+
+
+async def test_revoke_role_writes_audit_log(client, admin_user, org, db):
+    """DELETE /roles/{role} writes audit_logs with action admin.user_role.revoke."""
+    target = await _create_user_in_org(
+        db, org=org, email="audit_revoke@test.com", password="AuditRev1!", roles=[UserRoleEnum.packer]
+    )
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.delete(
+        f"{USERS_URL}/{target.id}/roles/packer",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "admin.user_role.revoke",
+            AuditLog.user_id == admin_user.id,
+            AuditLog.organisation_id == org.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit.resource_type == "user_roles"
+    assert audit.before_data["user_id"] == target.id
+    assert audit.before_data["role"] == "packer"
+    assert audit.after_data is None
+
+
+async def test_revoke_role_user_not_in_org_returns_404(client, admin_user, org, db):
+    """Targeting a user from another org returns 404."""
+    other_org = Organisation(name="Revoke Isolation", is_active=True)
+    db.add(other_org)
+    await db.flush()
+    outsider = User(email="revokeout@test.com", full_name="Out", password_hash="x", is_active=True)
+    db.add(outsider)
+    await db.flush()
+    db.add(UserOrganisation(user_id=outsider.id, organisation_id=other_org.id, created_by=outsider.id))
+    db.add(UserRole(user_id=outsider.id, organisation_id=other_org.id, role=UserRoleEnum.packer, assigned_by=outsider.id))
+    await db.flush()
+
+    token = await _login(client, admin_user, org, "AdminPass1!")
+    resp = await client.delete(
+        f"{USERS_URL}/{outsider.id}/roles/packer",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_revoke_role_non_admin_returns_403(client, packer_user, org, db):
+    target = await _create_user_in_org(
+        db, org=org, email="target_rev@test.com", password="Target1!", roles=[UserRoleEnum.packer]
+    )
+    token = await _login(client, packer_user, org, "PackerPass1!")
+    resp = await client.delete(
+        f"{USERS_URL}/{target.id}/roles/packer",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_revoke_role_no_auth_returns_401(client):
+    resp = await client.delete(f"{USERS_URL}/1/roles/packer")
+    assert resp.status_code == 401

@@ -238,6 +238,51 @@ async def update_user(
     return await _build_user_response(db, user.id, org_id)
 
 
+async def revoke_role(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    org_id: int,
+    role: UserRoleEnum,
+    revoking_user_id: int,
+    ip_address: str | None,
+) -> UserResponse:
+    user = await _get_user_in_org(db, user_id=user_id, org_id=org_id)
+
+    if user_id == revoking_user_id and role == UserRoleEnum.admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admin cannot revoke their own admin role",
+        )
+
+    result = await db.execute(
+        select(UserRole).where(
+            UserRole.user_id == user_id,
+            UserRole.organisation_id == org_id,
+            UserRole.role == role,
+        )
+    )
+    role_row = result.scalar_one_or_none()
+    if role_row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not assigned to this user")
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="admin.user_role.revoke",
+        resource_type="user_roles",
+        resource_id=role_row.id,
+        user_id=revoking_user_id,
+        organisation_id=org_id,
+        ip_address=ip_address,
+        before_data={"user_id": user_id, "role": role.value},
+    )
+
+    await db.delete(role_row)
+    await db.commit()
+    return await _build_user_response(db, user.id, org_id)
+
+
 async def assign_role(
     db: AsyncSession,
     *,
