@@ -18,6 +18,9 @@ Invariants verified:
   - Email uniqueness is system-wide
 """
 
+from sqlalchemy import select
+
+from app.models.audit_log import AuditLog
 from app.models.enums import UserRoleEnum
 from app.models.organisation import Organisation
 from app.models.user import User, UserOrganisation, UserRole
@@ -114,4 +117,113 @@ async def test_list_users_non_admin_returns_403(client, packer_user, org, db):
 
 async def test_list_users_no_auth_returns_401(client):
     resp = await client.get(USERS_URL)
+    assert resp.status_code == 401
+
+
+# ── POST /api/admin/users ─────────────────────────────────────────────────────
+
+async def test_create_user_success(client, admin_user, org, db):
+    """Admin can create a new user; response has correct fields."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "new@test.com", "full_name": "New User", "password": "NewPass1!", "roles": ["packer"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["email"] == "new@test.com"
+    assert data["full_name"] == "New User"
+    assert data["is_active"] is True
+    assert any(r["role"] == "packer" for r in data["roles"])
+    assert "id" in data
+    assert "created_at" in data
+
+
+async def test_create_user_response_excludes_password_hash(client, admin_user, org, db):
+    """Created user response must not expose password_hash."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "secure@test.com", "full_name": "Secure", "password": "SecurePass1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 201
+    assert "password_hash" not in resp.json()
+
+
+async def test_create_user_duplicate_email_returns_409(client, admin_user, org, db):
+    """Creating a user with an already-registered email returns 409."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    await client.post(
+        USERS_URL,
+        json={"email": "dup@test.com", "full_name": "First", "password": "FirstPass1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "dup@test.com", "full_name": "Second", "password": "SecondPass1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 409
+
+
+async def test_create_user_writes_audit_log(client, admin_user, org, db):
+    """POST /users writes an audit_logs row with action admin.user.create."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "audited@test.com", "full_name": "Audited", "password": "AuditPass1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    new_user_id = resp.json()["id"]
+
+    result = await db.execute(
+        select(AuditLog).where(
+            AuditLog.action == "admin.user.create",
+            AuditLog.resource_id == new_user_id,
+            AuditLog.user_id == admin_user.id,
+        )
+    )
+    audit = result.scalar_one()
+    assert audit.resource_type == "users"
+    assert audit.after_data["email"] == "audited@test.com"
+    assert "password_hash" not in (audit.after_data or {})
+    assert "password" not in (audit.after_data or {})
+
+
+async def test_create_user_no_roles_succeeds(client, admin_user, org, db):
+    """User can be created without any roles (empty roles list is valid)."""
+    token = await _login(client, admin_user, org, "AdminPass1!")
+
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "norole@test.com", "full_name": "No Role", "password": "NoRolePass1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 201
+    assert resp.json()["roles"] == []
+
+
+async def test_create_user_non_admin_returns_403(client, packer_user, org, db):
+    token = await _login(client, packer_user, org, "PackerPass1!")
+    resp = await client.post(
+        USERS_URL,
+        json={"email": "x@test.com", "full_name": "X", "password": "XPassword1!"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+async def test_create_user_no_auth_returns_401(client):
+    resp = await client.post(USERS_URL, json={"email": "x@test.com", "full_name": "X", "password": "XPassword1!"})
     assert resp.status_code == 401

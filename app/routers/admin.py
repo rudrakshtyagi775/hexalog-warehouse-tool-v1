@@ -11,7 +11,7 @@ from app.schemas.admin import (
     UpdateOrganisationRequest,
 )
 from app.schemas.common import MessageResponse
-from app.schemas.user import UserResponse
+from app.schemas.user import CreateUserRequest, UserResponse
 from app.services.auth_service import revoke_session, revoke_user_sessions
 from app.services.organisation_service import (
     create_organisation,
@@ -19,7 +19,7 @@ from app.services.organisation_service import (
     list_user_organisations,
     update_organisation,
 )
-from app.services.user_service import list_org_users
+from app.services.user_service import create_user, list_org_users
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -162,3 +162,27 @@ async def list_users_endpoint(
 ) -> list[UserResponse]:
     """List all users in the admin's current organisation."""
     return await list_org_users(db, org_id=current_user.organisation_id)
+
+
+@router.post(
+    "/users",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_user_endpoint(
+    body: CreateUserRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """Create a new user and add them to the admin's current organisation."""
+    return await create_user(
+        db,
+        email=body.email,
+        full_name=body.full_name,
+        password=body.password,
+        roles=body.roles,
+        org_id=current_user.organisation_id,
+        creating_user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )

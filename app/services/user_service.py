@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.enums import AuditModuleEnum, UserRoleEnum  # noqa: F401 (used by later tasks)
 from app.models.user import User, UserOrganisation, UserRole
 from app.schemas.user import UserResponse, UserRoleInfo
+from app.services.audit_service import write_audit_log
 from app.services.password_service import hash_password
 
 
@@ -113,3 +114,64 @@ async def list_org_users(db: AsyncSession, *, org_id: int) -> list[UserResponse]
         )
         for u in users
     ]
+
+
+async def create_user(
+    db: AsyncSession,
+    *,
+    email: str,
+    full_name: str,
+    password: str,
+    roles: list[UserRoleEnum],
+    org_id: int,
+    creating_user_id: int,
+    ip_address: str | None,
+) -> UserResponse:
+    existing = await db.execute(select(User).where(User.email == email))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+    user = User(
+        email=email,
+        full_name=full_name,
+        password_hash=_hash_password(password),
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+
+    db.add(UserOrganisation(
+        user_id=user.id,
+        organisation_id=org_id,
+        created_by=creating_user_id,
+    ))
+
+    for role in roles:
+        db.add(UserRole(
+            user_id=user.id,
+            organisation_id=org_id,
+            role=role,
+            assigned_by=creating_user_id,
+        ))
+
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="admin.user.create",
+        resource_type="users",
+        resource_id=user.id,
+        user_id=creating_user_id,
+        organisation_id=org_id,
+        ip_address=ip_address,
+        after_data={
+            "email": email,
+            "full_name": full_name,
+            "is_active": True,
+            "roles": [r.value for r in roles],
+        },
+    )
+
+    await db.commit()
+    return await _build_user_response(db, user.id, org_id)
