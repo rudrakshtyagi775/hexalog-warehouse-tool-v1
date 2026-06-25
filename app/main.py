@@ -1,15 +1,16 @@
 from contextlib import asynccontextmanager
 
-import app.models  # registers all ORM models in the mapper registry
 import structlog
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+import app.models  # registers all ORM models in the mapper registry
 from app.config import settings
 from app.logging_config import configure_logging
 from app.routers import admin as admin_router
 from app.routers import auth as auth_router
+from app.routers import customer as customer_router
 
 log = structlog.get_logger(__name__)
 
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router.router)
     app.include_router(admin_router.router)
+    app.include_router(customer_router.router)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
