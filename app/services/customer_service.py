@@ -19,3 +19,17 @@ async def list_customers(
     stmt = stmt.order_by(Customer.name)
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+async def get_customer(
+    db: AsyncSession,
+    customer_id: int,
+    organisation_id: int,
+) -> Customer | None:
+    result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organisation_id == organisation_id,
+        )
+    )
+    return result.scalar_one_or_none()

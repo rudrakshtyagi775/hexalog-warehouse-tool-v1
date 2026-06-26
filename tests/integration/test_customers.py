@@ -174,3 +174,56 @@ async def test_list_customers_sorted_by_name(client, admin_token, db, org, admin
     assert resp.status_code == 200
     names = [c["name"] for c in resp.json()]
     assert names == sorted(names)
+
+
+# ── Get by ID tests ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_customer_by_id(client, admin_token, active_customer):
+    resp = await client.get(
+        f"{BASE}/{active_customer.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == active_customer.id
+    assert data["code"] == "KIR"
+    assert data["name"] == "Kiran Enterprises"
+    assert data["status"] == "active"
+    assert "organisation_id" in data
+    assert "created_at" in data
+    assert "updated_at" in data
+
+
+@pytest.mark.asyncio
+async def test_get_customer_not_found(client, admin_token):
+    resp = await client.get(
+        f"{BASE}/999999",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_customer_wrong_org_returns_404(client, admin_token, other_org_customer):
+    """Cross-org lookup must 404 — never reveal another org's data."""
+    resp = await client.get(
+        f"{BASE}/{other_org_customer.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_customer_packer_allowed(client, packer_token, active_customer):
+    resp = await client.get(
+        f"{BASE}/{active_customer.id}",
+        headers={"Authorization": f"Bearer {packer_token}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_get_customer_unauthenticated(client, active_customer):
+    resp = await client.get(f"{BASE}/{active_customer.id}")
+    assert resp.status_code == 401
