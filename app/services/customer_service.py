@@ -1,8 +1,11 @@
+from fastapi import HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.customer import Customer
-from app.models.enums import CustomerStatusEnum
+from app.models.enums import AuditModuleEnum, CustomerStatusEnum
+from app.services.audit_service import write_audit_log
 
 
 async def list_customers(
@@ -33,3 +36,45 @@ async def get_customer(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def create_customer(
+    db: AsyncSession,
+    *,
+    name: str,
+    code: str,
+    organisation_id: int,
+    created_by: int,
+    ip_address: str | None,
+) -> Customer:
+    customer = Customer(
+        name=name,
+        code=code,
+        organisation_id=organisation_id,
+        created_by=created_by,
+        status=CustomerStatusEnum.active,
+    )
+    db.add(customer)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Customer with code '{code}' already exists in this organisation.",
+        )
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="customer_created",
+        resource_type="customer",
+        resource_id=customer.id,
+        user_id=created_by,
+        organisation_id=organisation_id,
+        before_data=None,
+        after_data={"name": name, "code": code, "status": CustomerStatusEnum.active.value},
+        ip_address=ip_address,
+    )
+    await db.commit()
+    await db.refresh(customer)
+    return customer

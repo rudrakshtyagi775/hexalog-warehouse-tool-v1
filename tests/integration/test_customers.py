@@ -227,3 +227,126 @@ async def test_get_customer_packer_allowed(client, packer_token, active_customer
 async def test_get_customer_unauthenticated(client, active_customer):
     resp = await client.get(f"{BASE}/{active_customer.id}")
     assert resp.status_code == 401
+
+
+# ── Create tests ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_customer_admin_success(client, admin_token, org):
+    resp = await client.post(
+        BASE,
+        json={"name": "New Customer", "code": "NEW"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "New Customer"
+    assert data["code"] == "NEW"
+    assert data["status"] == "active"
+    assert data["organisation_id"] == org.id
+    assert data["id"] > 0
+    assert "created_at" in data
+    assert "updated_at" in data
+
+
+@pytest.mark.asyncio
+async def test_create_customer_packer_forbidden(client, packer_token):
+    resp = await client.post(
+        BASE,
+        json={"name": "Test", "code": "TST"},
+        headers={"Authorization": f"Bearer {packer_token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_create_customer_unauthenticated(client):
+    resp = await client.post(BASE, json={"name": "Test", "code": "TST"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_create_customer_duplicate_code(client, admin_token, active_customer):
+    resp = await client.post(
+        BASE,
+        json={"name": "Another Kiran", "code": "KIR"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 409
+    assert "KIR" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_create_customer_invalid_code_lowercase(client, admin_token):
+    resp = await client.post(
+        BASE,
+        json={"name": "Test", "code": "kir"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_customer_code_too_short(client, admin_token):
+    resp = await client.post(
+        BASE,
+        json={"name": "Test", "code": "K"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_customer_code_too_long(client, admin_token):
+    resp = await client.post(
+        BASE,
+        json={"name": "Test", "code": "KIRN"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_customer_empty_name(client, admin_token):
+    resp = await client.post(
+        BASE,
+        json={"name": "", "code": "KIR"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_customer_duplicate_code_other_org_ok(
+    client, admin_token, other_org_customer
+):
+    """Same code in a different org is allowed — codes are unique per org."""
+    resp = await client.post(
+        BASE,
+        json={"name": "Foreign Clone", "code": "FOR"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_create_customer_audit_log_written(client, admin_token, db):
+    from app.models.audit_log import AuditLog
+    from sqlalchemy import select as sa_select
+    resp = await client.post(
+        BASE,
+        json={"name": "Audit Test", "code": "AUD"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 201
+    customer_id = resp.json()["id"]
+    result = await db.execute(
+        sa_select(AuditLog).where(
+            AuditLog.resource_type == "customer",
+            AuditLog.resource_id == customer_id,
+            AuditLog.action == "customer_created",
+        )
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None
+    assert log.after_data["code"] == "AUD"
