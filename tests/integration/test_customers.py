@@ -350,3 +350,138 @@ async def test_create_customer_audit_log_written(client, admin_token, db):
     log = result.scalar_one_or_none()
     assert log is not None
     assert log.after_data["code"] == "AUD"
+
+
+# ── Update tests ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_customer_name(client, admin_token, active_customer):
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"name": "Renamed Customer"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "Renamed Customer"
+    assert data["code"] == "KIR"
+    assert data["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_customer(client, admin_token, active_customer):
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"status": "inactive"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_reactivate_customer(client, admin_token, inactive_customer):
+    resp = await client.patch(
+        f"{BASE}/{inactive_customer.id}",
+        json={"status": "active"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_update_customer_both_fields(client, admin_token, active_customer):
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"name": "New Name", "status": "inactive"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "New Name"
+    assert data["status"] == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_update_customer_code_rejected(client, admin_token, active_customer):
+    """code is immutable — any attempt to patch it must return 422."""
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"code": "NEW"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_customer_packer_forbidden(client, packer_token, active_customer):
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"name": "Hijack"},
+        headers={"Authorization": f"Bearer {packer_token}"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_update_customer_unauthenticated(client, active_customer):
+    resp = await client.patch(f"{BASE}/{active_customer.id}", json={"name": "x"})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_update_customer_not_found(client, admin_token):
+    resp = await client.patch(
+        f"{BASE}/999999",
+        json={"name": "Ghost"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_customer_wrong_org_returns_404(
+    client, admin_token, other_org_customer
+):
+    resp = await client.patch(
+        f"{BASE}/{other_org_customer.id}",
+        json={"name": "Steal"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_customer_no_op_returns_200(client, admin_token, active_customer):
+    """Empty body (no fields to change) should return 200 unchanged."""
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == "KIR"
+
+
+@pytest.mark.asyncio
+async def test_update_customer_audit_log_written(client, admin_token, active_customer, db):
+    from app.models.audit_log import AuditLog
+    from sqlalchemy import select as sa_select
+    resp = await client.patch(
+        f"{BASE}/{active_customer.id}",
+        json={"name": "Audit Changed"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    result = await db.execute(
+        sa_select(AuditLog).where(
+            AuditLog.resource_type == "customer",
+            AuditLog.resource_id == active_customer.id,
+            AuditLog.action == "customer_updated",
+        )
+    )
+    log = result.scalar_one_or_none()
+    assert log is not None
+    assert log.before_data["name"] == "Kiran Enterprises"
+    assert log.after_data["name"] == "Audit Changed"

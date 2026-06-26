@@ -78,3 +78,46 @@ async def create_customer(
     await db.commit()
     await db.refresh(customer)
     return customer
+
+
+async def update_customer(
+    db: AsyncSession,
+    *,
+    customer_id: int,
+    organisation_id: int,
+    updated_by: int,
+    ip_address: str | None,
+    name: str | None,
+    status: CustomerStatusEnum | None,
+) -> Customer:
+    customer = await get_customer(db, customer_id, organisation_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    if name is None and status is None:
+        return customer
+
+    before = {"name": customer.name, "status": customer.status.value}
+
+    if name is not None:
+        customer.name = name
+    if status is not None:
+        customer.status = status
+
+    after = {"name": customer.name, "status": customer.status.value}
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.shared,
+        action="customer_updated",
+        resource_type="customer",
+        resource_id=customer.id,
+        user_id=updated_by,
+        organisation_id=organisation_id,
+        before_data=before,
+        after_data=after,
+        ip_address=ip_address,
+    )
+    await db.commit()
+    await db.refresh(customer)
+    return customer
