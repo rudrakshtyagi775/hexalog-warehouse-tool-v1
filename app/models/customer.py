@@ -1,4 +1,5 @@
-from sqlalchemy import Enum, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -18,7 +19,7 @@ class Customer(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     code: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[CustomerStatusEnum] = mapped_column(
-        Enum(CustomerStatusEnum, name="customer_status_enum", native_enum=True),
+        PGEnum(CustomerStatusEnum, name="customer_status_enum", create_type=False),
         default=CustomerStatusEnum.active,
         nullable=False,
     )
