@@ -105,7 +105,7 @@ class InwardPOLine(Base):
     ordered_qty: Mapped[int] = mapped_column(Integer, nullable=False)
     packed_qty: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    inward_po: Mapped["InwardPO"] = relationship(back_populates="lines")
+    inward_po: Mapped["InwardPO"] = relationship(back_populates="lines", lazy="raise")
 
 
 class InwardBox(TimestampMixin, Base):
@@ -194,6 +194,7 @@ class InwardScan(Base):
     box: Mapped["InwardBox"] = relationship(
         back_populates="scans",
         foreign_keys="[InwardScan.inward_box_id]",
+        lazy="raise",
     )
 
 
