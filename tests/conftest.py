@@ -116,3 +116,19 @@ async def inactive_user(db, org) -> User:
     db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
     await db.flush()
     return u
+
+
+@pytest_asyncio.fixture
+async def inward_operator_user(db, org) -> User:
+    u = User(
+        email="inward@test.com",
+        password_hash=hash_password("InwardPass1!"),
+        full_name="Test Inward Operator",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
+    db.add(UserRole(user_id=u.id, organisation_id=org.id, role=UserRoleEnum.inward_operator))
+    await db.flush()
+    return u

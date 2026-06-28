@@ -11,6 +11,7 @@ from app.logging_config import configure_logging
 from app.routers import admin as admin_router
 from app.routers import auth as auth_router
 from app.routers import customer as customer_router
+from app.routers import inward as inward_router
 
 log = structlog.get_logger(__name__)
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(admin_router.router)
     app.include_router(customer_router.router)
+    app.include_router(inward_router.router)
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
