@@ -18,6 +18,14 @@ from app.models.organisation import Organisation
 from app.models.user import LoginAttempt, Session, User, UserOrganisation, UserRole
 from app.models.audit_log import AuditLog
 from app.models.customer import Customer
+from app.models.inward import (
+    Counter,
+    InwardPO,
+    InwardPOLine,
+    InwardBox,
+    InwardScan,
+    InventoryLedgerEntry,
+)
 
 __all__ = [
     "Base",
@@ -43,4 +51,10 @@ __all__ = [
     "LoginAttempt",
     "AuditLog",
     "Customer",
+    "Counter",
+    "InwardPO",
+    "InwardPOLine",
+    "InwardBox",
+    "InwardScan",
+    "InventoryLedgerEntry",
 ]

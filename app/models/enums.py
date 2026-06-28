@@ -49,6 +49,7 @@ class LedgerSourceTypeEnum(str, enum.Enum):
     inward_submission = "inward_submission"
     outward_scan = "outward_scan"
     outward_scan_deletion = "outward_scan_deletion"
+    inward_scan_deletion = "inward_scan_deletion"  # ← add this
 
 
 class AuditModuleEnum(str, enum.Enum):
@@ -61,3 +62,4 @@ class AuditModuleEnum(str, enum.Enum):
 class CounterTypeEnum(str, enum.Enum):
     outward_box = "outward_box"
     inscan_number = "inscan_number"
+    inward_box = "inward_box"          # ← add this
