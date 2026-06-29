@@ -1,19 +1,44 @@
 import structlog
-from fastapi import APIRouter, Depends, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies.auth import require_inward_operator
-from app.models.inward import InwardPO
-from app.schemas.inward import POResponse
+from app.dependencies.auth import get_current_user, require_inward_operator, require_packer
+from app.models.enums import InwardBoxStatusEnum
+from app.models.inward import InwardBox, InwardPO
+from app.schemas.inward import BoxClose, BoxCreate, BoxResponse, POResponse, ScanResponse
 from app.services import inward_service
 from app.utils.request import get_client_ip
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/inward", tags=["inward"])
+
+
+def _box_to_response(box: InwardBox) -> BoxResponse:
+    return BoxResponse(
+        id=box.id,
+        box_id=box.box_id,
+        customer_id=box.customer_id,
+        status=box.status,
+        physical_qty=box.physical_qty,
+        scanned_qty=box.scanned_qty,
+        inscan_number=box.inscan_number,
+        scans=[
+            ScanResponse(
+                id=s.id,
+                ean=s.ean,
+                code_type=s.code_type,
+                is_deleted=s.is_deleted,
+                created_at=s.created_at,
+            )
+            for s in box.scans
+        ],
+        created_at=box.created_at,
+        is_read_only=box.status == InwardBoxStatusEnum.completed,
+    )
 
 
 @router.post("/pos", response_model=POResponse, status_code=status.HTTP_201_CREATED)
@@ -41,3 +66,54 @@ async def upload_po_endpoint(
     )
     po_with_lines = result.scalar_one()
     return po_with_lines
+
+
+@router.post("/boxes", response_model=BoxResponse, status_code=status.HTTP_201_CREATED)
+async def create_box_endpoint(
+    body: BoxCreate,
+    request: Request,
+    current_user=Depends(require_packer),
+    db: AsyncSession = Depends(get_db),
+) -> BoxResponse:
+    box = await inward_service.create_box(
+        db,
+        customer_id=body.customer_id,
+        organisation_id=current_user.organisation_id,
+        created_by=current_user.user_id,
+        user_roles=current_user.roles,
+        ip_address=get_client_ip(request),
+    )
+    return _box_to_response(box)
+
+
+@router.get("/boxes/{box_id}", response_model=BoxResponse)
+async def get_box_endpoint(
+    box_id: str,
+    current_user=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BoxResponse:
+    box = await inward_service.get_box(
+        db, box_id=box_id, organisation_id=current_user.organisation_id
+    )
+    if box is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Box not found")
+    return _box_to_response(box)
+
+
+@router.post("/boxes/{box_id}/close", response_model=BoxResponse)
+async def close_box_endpoint(
+    box_id: str,
+    body: BoxClose,
+    request: Request,
+    current_user=Depends(require_packer),
+    db: AsyncSession = Depends(get_db),
+) -> BoxResponse:
+    box = await inward_service.close_box(
+        db,
+        box_id=box_id,
+        organisation_id=current_user.organisation_id,
+        physical_qty=body.physical_qty,
+        closed_by=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return _box_to_response(box)
