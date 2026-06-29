@@ -1,7 +1,6 @@
 import io
 import csv as _csv
 
-import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
