@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import structlog
 from fastapi import HTTPException, status
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,6 +43,8 @@ async def upload_po(
     csv_bytes: bytes,
 ) -> InwardPO:
     """Parse CSV, validate columns, detect duplicates, create InwardPO + lines atomically."""
+    from app.models.customer import Customer
+
     # 1. Parse CSV
     text_io = io.StringIO(csv_bytes.decode("utf-8-sig"))
     reader = csv.DictReader(text_io)
@@ -60,7 +63,17 @@ async def upload_po(
     if not rows:
         raise HTTPException(status_code=400, detail="CSV file contains no data rows")
 
-    # 2. Duplicate detection
+    # 2. Validate customer belongs to this organisation (prevents cross-tenant IDOR)
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organisation_id == organisation_id,
+        )
+    )
+    if cust_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # 3. Duplicate detection (pre-check; IntegrityError on commit handles the concurrent case)
     existing = await db.execute(
         select(InwardPO).where(
             InwardPO.organisation_id == organisation_id,
@@ -73,11 +86,18 @@ async def upload_po(
             detail="An inward already exists for this PO/Invoice. Continue adding boxes to it?",
         )
 
-    # 3. Build lines from CSV rows matching this po_number
+    # 4. Build lines — reject CSVs that contain rows for a different po_number
     lines_data: list[dict] = []
     for row in rows:
-        if row.get("po_number", "").strip() != po_number:
-            continue
+        row_po = row.get("po_number", "").strip()
+        if row_po != po_number:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"CSV contains rows for a different PO number ('{row_po}'). "
+                    f"All rows must match the requested PO '{po_number}'."
+                ),
+            )
         try:
             ordered_qty = int(row["ordered_qty"])
         except (ValueError, KeyError):
@@ -96,7 +116,7 @@ async def upload_po(
             detail=f"No rows found in CSV for po_number '{po_number}'",
         )
 
-    # 4. Create InwardPO
+    # 5. Create InwardPO
     po = InwardPO(
         organisation_id=organisation_id,
         customer_id=customer_id,
@@ -105,9 +125,9 @@ async def upload_po(
         uploaded_by=uploaded_by,
     )
     db.add(po)
-    await db.flush()
+    await db.flush()  # populates po.id
 
-    # 5. Create InwardPOLine rows
+    # 6. Create InwardPOLine rows
     for ld in lines_data:
         db.add(InwardPOLine(
             inward_po_id=po.id,
@@ -123,13 +143,21 @@ async def upload_po(
         module=AuditModuleEnum.inward,
         action="po_uploaded",
         resource_type="inward_po",
+        resource_id=po.id,
         user_id=uploaded_by,
         organisation_id=organisation_id,
         after_data={"po_number": po_number, "customer_id": customer_id, "line_count": len(lines_data)},
         ip_address=ip_address,
     )
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An inward already exists for this PO/Invoice. Continue adding boxes to it?",
+        )
     await db.refresh(po)
     return po
 
@@ -174,6 +202,12 @@ async def create_box(
         UserRoleEnum.packer in user_roles and UserRoleEnum.admin not in user_roles
     )
     if is_packer_only:
+        # Advisory lock serialises concurrent create_box calls for the same packer,
+        # eliminating the SELECT-then-INSERT race where two requests both see no
+        # active box and both proceed to create one.
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:uid)"), {"uid": created_by}
+        )
         existing = await db.execute(
             select(InwardBox).where(
                 InwardBox.organisation_id == organisation_id,
@@ -218,12 +252,14 @@ async def create_box(
         created_by=created_by,
     )
     db.add(box)
+    await db.flush()  # populates box.id before writing the audit log
 
     await write_audit_log(
         db,
         module=AuditModuleEnum.inward,
         action="box_created",
         resource_type="inward_box",
+        resource_id=box.id,
         user_id=created_by,
         organisation_id=organisation_id,
         after_data={"box_id": box_id, "customer_id": customer_id},

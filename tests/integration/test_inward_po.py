@@ -124,3 +124,50 @@ async def test_upload_po_unauthenticated(client, org, customer):
         files={"file": ("po.csv", _make_csv(), "text/csv")},
     )
     assert resp.status_code == 401
+
+
+async def test_upload_po_cross_tenant_customer_returns_404(
+    client, inward_operator_user, org, db
+):
+    """customer_id from a different org must be rejected (IDOR guard)."""
+    from app.models.organisation import Organisation
+
+    other_org = Organisation(name="Other Org", is_active=True)
+    db.add(other_org)
+    await db.flush()
+    other_customer = Customer(
+        organisation_id=other_org.id,
+        name="Other Customer",
+        code="OTH",
+        status=CustomerStatusEnum.active,
+    )
+    db.add(other_customer)
+    await db.flush()
+
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
+    resp = await client.post(
+        "/api/inward/pos",
+        data={"customer_id": str(other_customer.id), "po_number": "PO-IDOR"},
+        files={"file": ("po.csv", _make_csv(), "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_upload_po_mixed_po_numbers_returns_400(
+    client, inward_operator_user, org, customer
+):
+    """CSV containing rows for a different PO number must be rejected."""
+    rows = [
+        {"po_number": "PO-A", "ean": "1111111111111", "ordered_qty": "2"},
+        {"po_number": "PO-B", "ean": "2222222222222", "ordered_qty": "3"},
+    ]
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
+    resp = await client.post(
+        "/api/inward/pos",
+        data={"customer_id": str(customer.id), "po_number": "PO-A"},
+        files={"file": ("po.csv", _make_csv(rows=rows), "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert "PO-B" in resp.json()["detail"]
