@@ -1,7 +1,16 @@
+import asyncio
 import os
+import sys
 
 import pytest
 import pytest_asyncio
+
+# asyncpg creates Futures bound to the running event loop. The Windows
+# ProactorEventLoop spawns separate loops per fixture scope in pytest-asyncio
+# 1.4.0, causing "Future attached to a different loop" errors. The Selector
+# loop avoids this by keeping all async I/O on one loop instance.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -36,13 +45,19 @@ async def async_engine():
 
 @pytest_asyncio.fixture
 async def db(async_engine):
-    """Function-scoped session that rolls back after each test."""
-    TestSession = async_sessionmaker(
-        async_engine, class_=AsyncSession, expire_on_commit=False
-    )
-    async with TestSession() as session:
-        yield session
-        await session.rollback()
+    """Function-scoped session that rolls back after each test.
+
+    Uses an outer connection transaction + create_savepoint mode so that
+    service-layer commit() calls only release a savepoint — the outer
+    conn.rollback() undoes everything after the test, giving true isolation.
+    """
+    async with async_engine.connect() as conn:
+        await conn.begin()
+        async with AsyncSession(
+            conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        ) as session:
+            yield session
+        await conn.rollback()
 
 
 @pytest_asyncio.fixture
