@@ -3,8 +3,8 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from app.models.customer import Customer
-from app.models.enums import CustomerStatusEnum, InwardBoxStatusEnum, InwardReferenceStatusEnum
-from app.models.inward import InwardBox, InwardPO, InwardPOLine
+from app.models.enums import CustomerStatusEnum, InwardBoxStatusEnum
+from app.models.inward import InwardBox
 
 
 async def _login(client: AsyncClient, email: str, password: str, org_id: int) -> str:
