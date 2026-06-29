@@ -1,5 +1,6 @@
 import csv
 import io
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import HTTPException, status
@@ -11,13 +12,17 @@ from app.models.enums import (
     AuditModuleEnum,
     CounterTypeEnum,
     InwardBoxStatusEnum,
+    InwardCodeTypeEnum,
     InwardReferenceStatusEnum,
+    LedgerSourceTypeEnum,
     UserRoleEnum,
 )
 from app.models.inward import (
     InwardBox,
+    InventoryLedgerEntry,
     InwardPO,
     InwardPOLine,
+    InwardScan,
 )
 from app.services.audit_service import write_audit_log
 
@@ -317,3 +322,231 @@ async def close_box(
         .where(InwardBox.id == box.id)
     )
     return reloaded.scalar_one()
+
+
+# ── Scan: add ─────────────────────────────────────────────────────────────────
+
+_MAX_ALLOC_RETRIES = 5
+
+
+async def add_scan(
+    db: AsyncSession,
+    *,
+    box_id: str,
+    organisation_id: int,
+    ean: str,
+    code_type: InwardCodeTypeEnum,
+    created_by: int,
+    ip_address: str | None,
+) -> tuple[InwardScan, str | None]:
+    """Allocate EAN to oldest open PO line (FIFO) and insert a scan row.
+
+    Returns (scan, note). note is the PRD 'no recorded inward stock' string or None.
+    Raises HTTPException 400 for EAN-not-found and all-lines-full.
+    """
+    # 1. Load box
+    box_result = await db.execute(
+        select(InwardBox).where(
+            InwardBox.box_id == box_id,
+            InwardBox.organisation_id == organisation_id,
+        )
+    )
+    box = box_result.scalar_one_or_none()
+    if box is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Box not found")
+    if box.status != InwardBoxStatusEnum.scanning:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot add scans to a box that is not in 'scanning' status",
+        )
+
+    # 2. Check if ANY open PO line has this EAN for this org/customer
+    any_line_result = await db.execute(
+        select(InwardPOLine)
+        .join(InwardPO, InwardPOLine.inward_po_id == InwardPO.id)
+        .where(
+            InwardPO.organisation_id == organisation_id,
+            InwardPO.customer_id == box.customer_id,
+            InwardPO.status == InwardReferenceStatusEnum.open,
+            InwardPOLine.ean == ean,
+        )
+        .limit(1)
+    )
+    if any_line_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="EAN not found in open POs")
+
+    # 3. FIFO allocation with conditional UPDATE retry loop
+    allocated_line_id: int | None = None
+    for _ in range(_MAX_ALLOC_RETRIES):
+        # Find oldest PO line with remaining capacity
+        candidate_result = await db.execute(
+            select(InwardPOLine)
+            .join(InwardPO, InwardPOLine.inward_po_id == InwardPO.id)
+            .where(
+                InwardPO.organisation_id == organisation_id,
+                InwardPO.customer_id == box.customer_id,
+                InwardPO.status == InwardReferenceStatusEnum.open,
+                InwardPOLine.ean == ean,
+                InwardPOLine.packed_qty < InwardPOLine.ordered_qty,
+            )
+            .order_by(InwardPO.uploaded_at.asc(), InwardPO.id.asc())
+            .limit(1)
+        )
+        candidate = candidate_result.scalar_one_or_none()
+        if candidate is None:
+            # All lines now full (race: another scan filled the last slot)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quantity complete for all open POs",
+            )
+
+        # Conditional UPDATE — atomically increments only if still has capacity
+        updated = await db.execute(
+            text("""
+                UPDATE inward_po_lines
+                SET packed_qty = packed_qty + 1
+                WHERE id = :id AND packed_qty < ordered_qty
+                RETURNING id
+            """),
+            {"id": candidate.id},
+        )
+        if updated.scalar_one_or_none() is not None:
+            allocated_line_id = candidate.id
+            break
+        # 0 rows updated — another session raced us; retry
+
+    if allocated_line_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Quantity complete for all open POs",
+        )
+
+    # 4. Insert scan row
+    scan = InwardScan(
+        organisation_id=organisation_id,
+        inward_box_id=box.id,
+        inward_po_line_id=allocated_line_id,
+        ean=ean,
+        code_type=code_type,
+        is_deleted=False,
+        created_by=created_by,
+    )
+    db.add(scan)
+
+    # 5. Increment box scanned_qty (same transaction)
+    await db.execute(
+        text("UPDATE inward_boxes SET scanned_qty = scanned_qty + 1 WHERE id = :id"),
+        {"id": box.id},
+    )
+
+    # 6. Check for "no recorded inward stock" note.
+    # Show the note when no positive inward_submission ledger entries exist
+    # for this EAN/customer (i.e., the item has never been received via a
+    # completed inward box submission).
+    ledger_result = await db.execute(
+        text("""
+            SELECT COALESCE(SUM(quantity_change), 0)
+            FROM inventory_ledger_entries
+            WHERE organisation_id = :org AND customer_id = :cust AND ean = :ean
+        """),
+        {"org": organisation_id, "cust": box.customer_id, "ean": ean},
+    )
+    note: str | None = None
+    if (ledger_result.scalar() or 0) <= 0:
+        note = "Note: no recorded inward stock for this item."
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="scan_added",
+        resource_type="inward_scan",
+        user_id=created_by,
+        organisation_id=organisation_id,
+        after_data={"box_id": box_id, "ean": ean, "po_line_id": allocated_line_id},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    await db.refresh(scan)
+    return scan, note
+
+
+# ── Scan: delete (soft) ───────────────────────────────────────────────────────
+
+async def delete_scan(
+    db: AsyncSession,
+    *,
+    scan_id: int,
+    organisation_id: int,
+    deleted_by: int,
+    ip_address: str | None,
+) -> InwardScan:
+    """Soft-delete a scan. Decrements scanned_qty and packed_qty in the same transaction.
+
+    If the parent box is completed, also writes a -1 ledger reversal entry.
+    """
+    scan_result = await db.execute(
+        select(InwardScan)
+        .join(InwardBox, InwardScan.inward_box_id == InwardBox.id)
+        .where(
+            InwardScan.id == scan_id,
+            InwardBox.organisation_id == organisation_id,
+        )
+    )
+    scan = scan_result.scalar_one_or_none()
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    if scan.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Scan already deleted"
+        )
+
+    # Soft-delete
+    scan.is_deleted = True
+    scan.deleted_at = datetime.now(timezone.utc)
+    scan.deleted_by = deleted_by
+
+    # Decrement box scanned_qty
+    await db.execute(
+        text("UPDATE inward_boxes SET scanned_qty = scanned_qty - 1 WHERE id = :id"),
+        {"id": scan.inward_box_id},
+    )
+
+    # Decrement po_line packed_qty (if allocated)
+    if scan.inward_po_line_id is not None:
+        await db.execute(
+            text("UPDATE inward_po_lines SET packed_qty = packed_qty - 1 WHERE id = :id"),
+            {"id": scan.inward_po_line_id},
+        )
+
+    # If box is submitted (completed), write -1 ledger reversal
+    box_result = await db.execute(
+        select(InwardBox).where(InwardBox.id == scan.inward_box_id)
+    )
+    box = box_result.scalar_one()
+    if box.status == InwardBoxStatusEnum.completed:
+        db.add(InventoryLedgerEntry(
+            organisation_id=organisation_id,
+            customer_id=box.customer_id,
+            ean=scan.ean,
+            quantity_change=-1,
+            source_type=LedgerSourceTypeEnum.inward_scan_deletion,
+            source_id=scan.id,
+        ))
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="scan_deleted",
+        resource_type="inward_scan",
+        resource_id=scan.id,
+        user_id=deleted_by,
+        organisation_id=organisation_id,
+        before_data={"ean": scan.ean, "is_deleted": False},
+        after_data={"is_deleted": True},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    await db.refresh(scan)
+    return scan

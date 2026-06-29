@@ -8,7 +8,7 @@ from app.database import get_db
 from app.dependencies.auth import get_current_user, require_inward_operator, require_packer
 from app.models.enums import InwardBoxStatusEnum
 from app.models.inward import InwardBox, InwardPO
-from app.schemas.inward import BoxClose, BoxCreate, BoxResponse, POResponse, ScanResponse
+from app.schemas.inward import BoxClose, BoxCreate, BoxResponse, POResponse, ScanCreate, ScanCreateResponse, ScanResponse
 from app.services import inward_service
 from app.utils.request import get_client_ip
 
@@ -117,3 +117,57 @@ async def close_box_endpoint(
         ip_address=get_client_ip(request),
     )
     return _box_to_response(box)
+
+
+@router.post(
+    "/boxes/{box_id}/scans",
+    response_model=ScanCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_scan_endpoint(
+    box_id: str,
+    body: ScanCreate,
+    request: Request,
+    current_user=Depends(require_packer),
+    db: AsyncSession = Depends(get_db),
+) -> ScanCreateResponse:
+    scan, note = await inward_service.add_scan(
+        db,
+        box_id=box_id,
+        organisation_id=current_user.organisation_id,
+        ean=body.ean,
+        code_type=body.code_type,
+        created_by=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return ScanCreateResponse(
+        id=scan.id,
+        ean=scan.ean,
+        code_type=scan.code_type,
+        is_deleted=scan.is_deleted,
+        created_at=scan.created_at,
+        note=note,
+    )
+
+
+@router.delete("/scans/{scan_id}", response_model=ScanResponse)
+async def delete_scan_endpoint(
+    scan_id: int,
+    request: Request,
+    current_user=Depends(require_packer),
+    db: AsyncSession = Depends(get_db),
+) -> ScanResponse:
+    scan = await inward_service.delete_scan(
+        db,
+        scan_id=scan_id,
+        organisation_id=current_user.organisation_id,
+        deleted_by=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return ScanResponse(
+        id=scan.id,
+        ean=scan.ean,
+        code_type=scan.code_type,
+        is_deleted=scan.is_deleted,
+        created_at=scan.created_at,
+    )
