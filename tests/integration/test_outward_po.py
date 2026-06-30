@@ -1,5 +1,3 @@
-import io
-
 import pytest_asyncio
 from httpx import AsyncClient
 
