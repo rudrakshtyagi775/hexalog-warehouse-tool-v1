@@ -17,7 +17,7 @@ def _make_csv(po_number: str, ean: str = "1234567890123", qty: int = 10) -> byte
     return (
         f"po_number,ean,ordered_qty,description\n"
         f"{po_number},{ean},{qty},Widget\n"
-    ).encode("utf-8")
+    ).encode()
 
 
 @pytest_asyncio.fixture

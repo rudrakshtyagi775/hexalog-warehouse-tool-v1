@@ -143,7 +143,11 @@ async def upload_po(
         resource_id=po.id,
         user_id=uploaded_by,
         organisation_id=organisation_id,
-        after_data={"po_number": po_number, "customer_id": customer_id, "line_count": len(lines_data)},
+        after_data={
+            "po_number": po_number,
+            "customer_id": customer_id,
+            "line_count": len(lines_data),
+        },
         ip_address=ip_address,
     )
 

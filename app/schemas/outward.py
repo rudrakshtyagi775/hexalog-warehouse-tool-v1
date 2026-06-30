@@ -4,7 +4,6 @@ from pydantic import BaseModel
 
 from app.models.enums import OutwardBoxStatusEnum, OutwardPoStatusEnum, OutwardScanResultEnum
 
-
 # ── Request schemas ───────────────────────────────────────────────────────────
 
 class OutwardBoxCreate(BaseModel):
