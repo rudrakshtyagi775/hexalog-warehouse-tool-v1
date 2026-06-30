@@ -12,6 +12,11 @@ import { ActiveBoxesPage } from '@/pages/ActiveBoxes'
 import { CloseBoxPage }    from '@/pages/CloseBox'
 import { CustomersPage }   from '@/pages/Customers'
 import { ReportsPage }     from '@/pages/Reports'
+import { UploadOutwardPOPage }    from '@/pages/outward/UploadOutwardPO'
+import { CreateOutwardBoxPage }   from '@/pages/outward/CreateOutwardBox'
+import { OutwardScanItemsPage }   from '@/pages/outward/OutwardScanItems'
+import { ActiveOutwardBoxesPage } from '@/pages/outward/ActiveOutwardBoxes'
+import { CloseOutwardBoxPage }    from '@/pages/outward/CloseOutwardBox'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -50,6 +55,11 @@ export default function App() {
         <Route path="/close-box"    element={<CloseBoxPage />}    />
         <Route path="/customers"    element={<CustomersPage />}   />
         <Route path="/reports"      element={<ReportsPage />}     />
+        <Route path="/outward/upload-po"    element={<UploadOutwardPOPage />}    />
+        <Route path="/outward/create-box"   element={<CreateOutwardBoxPage />}   />
+        <Route path="/outward/scan"         element={<OutwardScanItemsPage />}   />
+        <Route path="/outward/active-boxes" element={<ActiveOutwardBoxesPage />} />
+        <Route path="/outward/close-box"    element={<CloseOutwardBoxPage />}    />
         <Route path="*"             element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

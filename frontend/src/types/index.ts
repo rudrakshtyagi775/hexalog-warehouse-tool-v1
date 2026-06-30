@@ -157,3 +157,56 @@ export interface ScanCreate {
 export interface ApiError {
   detail: string
 }
+
+// ── Outward — PO ─────────────────────────────────────────────────────────────
+
+export interface OutwardPOLineResponse {
+  id: number
+  ean: string
+  description: string | null
+  ordered_qty: number
+  packed_qty: number
+}
+
+export interface OutwardPOResponse {
+  id: number
+  po_number: string
+  customer_id: number
+  status: 'open' | 'closed'
+  uploaded_at: string
+  lines: OutwardPOLineResponse[]
+}
+
+// ── Outward — Box ─────────────────────────────────────────────────────────────
+
+export type OutwardBoxStatus = 'open' | 'in_use' | 'closed'
+export type OutwardScanResult = 'accepted' | 'rejected' | 'deleted'
+
+export interface OutwardScanResponse {
+  id: number
+  ean: string
+  scan_result: OutwardScanResult
+  created_at: string
+}
+
+export interface OutwardScanCreateResponse extends OutwardScanResponse {
+  note: string | null
+}
+
+export interface OutwardBoxResponse {
+  id: number
+  box_id: string
+  customer_id: number
+  status: OutwardBoxStatus
+  scans: OutwardScanResponse[]
+  created_at: string
+  is_read_only: boolean
+}
+
+export interface OutwardBoxCreate {
+  customer_id: number
+}
+
+export interface OutwardScanCreate {
+  ean: string
+}

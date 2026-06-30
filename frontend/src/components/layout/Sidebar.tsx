@@ -27,6 +27,14 @@ const secondaryNav = [
   { to: '/reports',   label: 'Reports',   icon: BarChart2 },
 ]
 
+const outwardNav = [
+  { to: '/outward/upload-po',    label: 'Upload Outward PO', icon: Upload      },
+  { to: '/outward/create-box',   label: 'Create Box',        icon: Package     },
+  { to: '/outward/scan',         label: 'Scan Items',        icon: ScanLine    },
+  { to: '/outward/active-boxes', label: 'Active Boxes',      icon: Boxes       },
+  { to: '/outward/close-box',    label: 'Close Box',         icon: CheckSquare },
+]
+
 function NavItem({
   to,
   label,
@@ -83,9 +91,17 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
         <p className="px-3 mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: '#744C8A' }}>
-          Workflow
+          Inward
         </p>
         {primaryNav.map((item) => (
+          <NavItem key={item.to} {...item} />
+        ))}
+
+        <div className="my-4 border-t" style={{ borderColor: '#3D2350' }} />
+        <p className="px-3 mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: '#744C8A' }}>
+          Outward
+        </p>
+        {outwardNav.map((item) => (
           <NavItem key={item.to} {...item} />
         ))}
 

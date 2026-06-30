@@ -4,14 +4,19 @@ import { Badge } from '@/components/ui/Badge'
 import type { Role } from '@/types'
 
 const routeTitles: Record<string, string> = {
-  '/dashboard':    'Dashboard',
-  '/upload-po':    'Upload Purchase Order',
-  '/create-box':   'Create Box',
-  '/scan':         'Scan Items',
-  '/active-boxes': 'Active Boxes',
-  '/close-box':    'Close Box',
-  '/customers':    'Customers',
-  '/reports':      'Reports',
+  '/dashboard':             'Dashboard',
+  '/upload-po':             'Upload Inward PO',
+  '/create-box':            'Create Inward Box',
+  '/scan':                  'Scan Inward Items',
+  '/active-boxes':          'Active Inward Boxes',
+  '/close-box':             'Close Inward Box',
+  '/customers':             'Customers',
+  '/reports':               'Reports',
+  '/outward/upload-po':     'Upload Outward PO',
+  '/outward/create-box':    'Create Outward Box',
+  '/outward/scan':          'Scan Outward Items',
+  '/outward/active-boxes':  'Active Outward Boxes',
+  '/outward/close-box':     'Close Outward Box',
 }
 
 const roleBadgeVariant = (role: Role) => {
