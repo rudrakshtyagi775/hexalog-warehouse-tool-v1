@@ -26,6 +26,12 @@ from app.models.inward import (
     InwardScan,
     InventoryLedgerEntry,
 )
+from app.models.outward import (
+    OutwardPO,
+    OutwardPOLine,
+    OutwardBox,
+    OutwardScan,
+)
 
 __all__ = [
     "Base",
@@ -57,4 +63,8 @@ __all__ = [
     "InwardBox",
     "InwardScan",
     "InventoryLedgerEntry",
+    "OutwardPO",
+    "OutwardPOLine",
+    "OutwardBox",
+    "OutwardScan",
 ]
