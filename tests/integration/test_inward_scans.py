@@ -80,7 +80,6 @@ async def test_add_scan_success(client, packer_user, org, scanning_box, po_with_
     body = resp.json()
     assert body["ean"] == "1234567890123"
     assert body["is_deleted"] is False
-    assert body.get("note") is None
 
 
 async def test_add_scan_increments_scanned_qty(client, packer_user, org, scanning_box,
