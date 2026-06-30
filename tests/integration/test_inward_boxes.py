@@ -1,10 +1,15 @@
-import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from app.models.customer import Customer
-from app.models.enums import CustomerStatusEnum, InwardBoxStatusEnum
-from app.models.inward import InwardBox
+from app.models.enums import (
+    CustomerStatusEnum,
+    InwardBoxStatusEnum,
+    InwardCodeTypeEnum,
+    LedgerSourceTypeEnum,
+)
+from app.models.inward import InventoryLedgerEntry, InwardBox, InwardScan
 
 
 async def _login(client: AsyncClient, email: str, password: str, org_id: int) -> str:
@@ -196,3 +201,175 @@ async def test_close_box_wrong_status(client, packer_user, org, closed_box):
     )
     assert resp.status_code == 400
     assert "scanning" in resp.json()["detail"].lower()
+
+
+# ── Submit box ────────────────────────────────────────────────────────────────
+
+async def test_submit_box_success(client, packer_user, org, closed_box):
+    """pending_verification → completed; inscan_number is set; is_read_only becomes True."""
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        f"/api/inward/boxes/{closed_box.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["inscan_number"] is not None
+    assert body["inscan_number"].startswith("INS-TST-")
+    assert body["is_read_only"] is True
+
+
+async def test_submit_box_inscan_number_format(client, packer_user, org, closed_box):
+    """Inscan number matches INS-<CUSTCODE>-<YYYYMMDD>-<XXXX>."""
+    import re
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        f"/api/inward/boxes/{closed_box.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    inscan = resp.json()["inscan_number"]
+    assert re.match(r"^INS-[A-Z]+-\d{8}-\d{4}$", inscan), f"Bad format: {inscan}"
+
+
+async def test_submit_box_wrong_status_scanning(client, packer_user, org, open_box):
+    """Box in 'scanning' status cannot be submitted — must close first."""
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        f"/api/inward/boxes/{open_box.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert "pending_verification" in resp.json()["detail"].lower()
+
+
+async def test_submit_box_wrong_status_completed(client, packer_user, org, db, customer):
+    """Already-completed box cannot be submitted again."""
+    box = InwardBox(
+        box_id="B-TST-000001",
+        organisation_id=org.id,
+        customer_id=customer.id,
+        status=InwardBoxStatusEnum.completed,
+        scanned_qty=2,
+        inscan_number="INS-TST-20260630-0001",
+    )
+    db.add(box)
+    await db.flush()
+
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        f"/api/inward/boxes/{box.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert "pending_verification" in resp.json()["detail"].lower()
+
+
+async def test_submit_box_not_found(client, packer_user, org):
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        "/api/inward/boxes/B-XXX-999999/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_submit_box_requires_auth(client, closed_box):
+    resp = await client.post(f"/api/inward/boxes/{closed_box.box_id}/submit")
+    assert resp.status_code == 401
+
+
+async def test_submit_box_writes_ledger_entries(client, packer_user, org, db, customer):
+    """One +1 InventoryLedgerEntry per active scan; deleted scans are skipped."""
+    box = InwardBox(
+        box_id="B-TST-000097",
+        organisation_id=org.id,
+        customer_id=customer.id,
+        status=InwardBoxStatusEnum.pending_verification,
+        scanned_qty=2,
+        physical_qty=2,
+    )
+    db.add(box)
+    await db.flush()
+
+    scan_a = InwardScan(
+        organisation_id=org.id,
+        inward_box_id=box.id,
+        ean="1111111111111",
+        code_type=InwardCodeTypeEnum.ean,
+        is_deleted=False,
+    )
+    scan_b = InwardScan(
+        organisation_id=org.id,
+        inward_box_id=box.id,
+        ean="2222222222222",
+        code_type=InwardCodeTypeEnum.ean,
+        is_deleted=False,
+    )
+    scan_del = InwardScan(
+        organisation_id=org.id,
+        inward_box_id=box.id,
+        ean="3333333333333",
+        code_type=InwardCodeTypeEnum.ean,
+        is_deleted=True,
+    )
+    db.add_all([scan_a, scan_b, scan_del])
+    await db.flush()
+
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.post(
+        f"/api/inward/boxes/{box.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    entries = (
+        await db.execute(
+            select(InventoryLedgerEntry).where(
+                InventoryLedgerEntry.organisation_id == org.id,
+                InventoryLedgerEntry.source_type == LedgerSourceTypeEnum.inward_submission,
+            )
+        )
+    ).scalars().all()
+
+    assert len(entries) == 2
+    assert {e.ean for e in entries} == {"1111111111111", "2222222222222"}
+    assert all(e.quantity_change == 1 for e in entries)
+
+
+async def test_submit_box_sequential_inscan_numbers(client, admin_user, org, db, customer):
+    """Counter increments per customer per day; second submission gets next number."""
+    box1 = InwardBox(
+        box_id="B-TST-000095",
+        organisation_id=org.id,
+        customer_id=customer.id,
+        status=InwardBoxStatusEnum.pending_verification,
+        scanned_qty=0,
+        physical_qty=0,
+    )
+    box2 = InwardBox(
+        box_id="B-TST-000096",
+        organisation_id=org.id,
+        customer_id=customer.id,
+        status=InwardBoxStatusEnum.pending_verification,
+        scanned_qty=0,
+        physical_qty=0,
+    )
+    db.add_all([box1, box2])
+    await db.flush()
+
+    token = await _login(client, "admin@test.com", "AdminPass1!", org.id)
+    r1 = await client.post(
+        f"/api/inward/boxes/{box1.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    r2 = await client.post(
+        f"/api/inward/boxes/{box2.box_id}/submit",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    n1 = int(r1.json()["inscan_number"].split("-")[-1])
+    n2 = int(r2.json()["inscan_number"].split("-")[-1])
+    assert n2 == n1 + 1

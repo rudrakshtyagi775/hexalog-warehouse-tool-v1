@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 from fastapi import HTTPException, status
@@ -19,8 +19,8 @@ from app.models.enums import (
     UserRoleEnum,
 )
 from app.models.inward import (
-    InwardBox,
     InventoryLedgerEntry,
+    InwardBox,
     InwardPO,
     InwardPOLine,
     InwardScan,
@@ -360,6 +360,107 @@ async def close_box(
     return reloaded.scalar_one()
 
 
+# ── Box: submit ───────────────────────────────────────────────────────────────
+
+async def submit_box(
+    db: AsyncSession,
+    *,
+    box_id: str,
+    organisation_id: int,
+    submitted_by: int,
+    ip_address: str | None,
+) -> InwardBox:
+    """Transition pending_verification → completed. Generates inscan_number,
+    writes one +1 InventoryLedgerEntry per active scan, and writes an audit row.
+    """
+    from zoneinfo import ZoneInfo
+
+    from app.config import settings
+    from app.models.customer import Customer
+
+    result = await db.execute(
+        select(InwardBox)
+        .options(selectinload(InwardBox.scans))
+        .where(
+            InwardBox.box_id == box_id,
+            InwardBox.organisation_id == organisation_id,
+        )
+    )
+    box = result.scalar_one_or_none()
+    if box is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Box not found")
+
+    if box.status != InwardBoxStatusEnum.pending_verification:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Box must be in 'pending_verification' status to submit "
+                f"(current: {box.status.value})"
+            ),
+        )
+
+    # Load customer code for inscan_number format: INS-<CUSTCODE>-<YYYYMMDD>-<XXXX>
+    cust_result = await db.execute(
+        select(Customer).where(Customer.id == box.customer_id)
+    )
+    customer = cust_result.scalar_one()
+
+    tz = ZoneInfo(settings.APP_TIMEZONE)
+    today = datetime.now(tz).strftime("%Y%m%d")
+    n = await _next_counter(
+        db,
+        counter_type=CounterTypeEnum.inscan_number,
+        organisation_id=organisation_id,
+        customer_code=customer.code,
+        date_key=today,
+    )
+    inscan_number = f"INS-{customer.code}-{today}-{n:04d}"
+
+    # One +1 ledger entry per active scan
+    active_scans = [s for s in box.scans if not s.is_deleted]
+    for scan in active_scans:
+        db.add(InventoryLedgerEntry(
+            organisation_id=organisation_id,
+            customer_id=box.customer_id,
+            ean=scan.ean,
+            quantity_change=1,
+            source_type=LedgerSourceTypeEnum.inward_submission,
+            source_id=scan.id,
+        ))
+
+    box.status = InwardBoxStatusEnum.completed
+    box.inscan_number = inscan_number
+    box.submitted_at = datetime.now(UTC)
+    box.submitted_by = submitted_by
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="box_submitted",
+        resource_type="inward_box",
+        resource_id=box.id,
+        user_id=submitted_by,
+        organisation_id=organisation_id,
+        before_data={"status": "pending_verification"},
+        after_data={
+            "status": "completed",
+            "inscan_number": inscan_number,
+            "ledger_entries": len(active_scans),
+        },
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+
+    # Reload with scans eager-loaded (lazy="raise" blocks post-commit attribute access)
+    reloaded = await db.execute(
+        select(InwardBox)
+        .options(selectinload(InwardBox.scans))
+        .where(InwardBox.id == box.id)
+    )
+    return reloaded.scalar_one()
+
+
 # ── Scan: add ─────────────────────────────────────────────────────────────────
 
 _MAX_ALLOC_RETRIES = 5
@@ -539,7 +640,7 @@ async def delete_scan(
 
     # Soft-delete
     scan.is_deleted = True
-    scan.deleted_at = datetime.now(timezone.utc)
+    scan.deleted_at = datetime.now(UTC)
     scan.deleted_by = deleted_by
 
     # Decrement box scanned_qty

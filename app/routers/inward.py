@@ -8,7 +8,15 @@ from app.database import get_db
 from app.dependencies.auth import get_current_user, require_inward_operator, require_packer
 from app.models.enums import InwardBoxStatusEnum
 from app.models.inward import InwardBox, InwardPO
-from app.schemas.inward import BoxClose, BoxCreate, BoxResponse, POResponse, ScanCreate, ScanCreateResponse, ScanResponse
+from app.schemas.inward import (
+    BoxClose,
+    BoxCreate,
+    BoxResponse,
+    POResponse,
+    ScanCreate,
+    ScanCreateResponse,
+    ScanResponse,
+)
 from app.services import inward_service
 from app.utils.request import get_client_ip
 
@@ -114,6 +122,23 @@ async def close_box_endpoint(
         organisation_id=current_user.organisation_id,
         physical_qty=body.physical_qty,
         closed_by=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
+    return _box_to_response(box)
+
+
+@router.post("/boxes/{box_id}/submit", response_model=BoxResponse)
+async def submit_box_endpoint(
+    box_id: str,
+    request: Request,
+    current_user=Depends(require_packer),
+    db: AsyncSession = Depends(get_db),
+) -> BoxResponse:
+    box = await inward_service.submit_box(
+        db,
+        box_id=box_id,
+        organisation_id=current_user.organisation_id,
+        submitted_by=current_user.user_id,
         ip_address=get_client_ip(request),
     )
     return _box_to_response(box)
