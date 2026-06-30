@@ -51,3 +51,12 @@ export function useUploadPO() {
     mutationFn: (formData: FormData) => inwardApi.uploadPO(formData),
   })
 }
+
+export function useSubmitBox() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (boxId: string) => inwardApi.submitBox(boxId),
+    onSuccess: (_, boxId) =>
+      qc.invalidateQueries({ queryKey: ['box', boxId] }),
+  })
+}

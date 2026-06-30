@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { CheckSquare, CheckCircle } from 'lucide-react'
-import { useBox, useCloseBox } from '@/hooks/useInward'
+import { useBox, useCloseBox, useSubmitBox } from '@/hooks/useInward'
 import { extractErrorMessage } from '@/api/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -20,6 +20,17 @@ export function CloseBoxPage() {
 
   const { data: box, isLoading } = useBox(activeBoxId)
   const closeBox = useCloseBox()
+  const submitBox = useSubmitBox()
+
+  const handleSubmit = async () => {
+    if (!activeBoxId) return
+    setError('')
+    try {
+      await submitBox.mutateAsync(activeBoxId)
+    } catch (err) {
+      setError(extractErrorMessage(err))
+    }
+  }
 
   const handleLoadBox = (e: React.FormEvent) => {
     e.preventDefault()
@@ -42,6 +53,55 @@ export function CloseBoxPage() {
     } catch (err) {
       setError(extractErrorMessage(err))
     }
+  }
+
+  // Pending-verification state — box is closed, awaiting final submission
+  if (box?.status === 'pending_verification') {
+    return (
+      <div className="max-w-md mx-auto">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <CheckSquare className="h-5 w-5 text-blue-600" />
+              <CardTitle>Confirm Submission</CardTitle>
+            </div>
+          </CardHeader>
+
+          <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mb-5">
+            <p className="text-sm text-blue-800">
+              Box <span className="font-mono font-bold">{box.box_id}</span> is verified.
+              Submitting will generate the Inscan Number and record inventory.
+            </p>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4 space-y-3 mb-5">
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Scanned Qty</span>
+              <span className="font-medium">{box.scanned_qty}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-gray-500">Physical Qty</span>
+              <span className="font-medium">{box.physical_qty}</span>
+            </div>
+          </div>
+
+          {error && (
+            <Alert variant="error" className="mb-5">
+              {error}
+            </Alert>
+          )}
+
+          <Button
+            loading={submitBox.isPending}
+            className="w-full"
+            onClick={() => void handleSubmit()}
+          >
+            <CheckCircle className="h-4 w-4" />
+            Confirm &amp; Submit
+          </Button>
+        </Card>
+      </div>
+    )
   }
 
   // Closed state

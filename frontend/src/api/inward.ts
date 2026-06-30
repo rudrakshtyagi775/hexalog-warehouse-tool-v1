@@ -26,6 +26,9 @@ export const inwardApi = {
   closeBox: (boxId: string, data: BoxClose) =>
     apiClient.post<BoxResponse>(`/inward/boxes/${boxId}/close`, data).then((r) => r.data),
 
+  submitBox: (boxId: string) =>
+    apiClient.post<BoxResponse>(`/inward/boxes/${boxId}/submit`).then((r) => r.data),
+
   addScan: (boxId: string, data: ScanCreate) =>
     apiClient
       .post<ScanCreateResponse>(`/inward/boxes/${boxId}/scans`, data)
