@@ -55,7 +55,7 @@ class OutwardPOLine(Base):
 
     __tablename__ = "outward_po_lines"
     __table_args__ = (
-        Index("idx_outward_po_lines_ean_org", "organisation_id", "ean"),
+        Index("ix_outward_po_lines_ean", "organisation_id", "ean"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -78,7 +78,7 @@ class OutwardBox(TimestampMixin, Base):
 
     __tablename__ = "outward_boxes"
     __table_args__ = (
-        Index("idx_outward_boxes_org_status", "organisation_id", "status"),
+        Index("ix_outward_boxes_org_status", "organisation_id", "status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
