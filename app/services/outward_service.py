@@ -498,6 +498,12 @@ async def delete_scan(
     )
     box = box_result.scalar_one()
 
+    if box.status == OutwardBoxStatusEnum.closed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete scans from a closed box",
+        )
+
     # Soft-delete
     scan.scan_result = OutwardScanResultEnum.deleted
 
