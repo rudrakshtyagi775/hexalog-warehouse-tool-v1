@@ -426,6 +426,7 @@ async def add_scan(
         source_type=LedgerSourceTypeEnum.outward_scan,
         source_id=scan.id,
     ))
+    await db.flush()
 
     # 8. Check ledger balance for "no inward stock" note
     ledger_result = await db.execute(
@@ -445,6 +446,7 @@ async def add_scan(
         module=AuditModuleEnum.outward,
         action="outward_scan_added",
         resource_type="outward_scan",
+        resource_id=scan.id,
         user_id=created_by,
         organisation_id=organisation_id,
         after_data={"box_id": box_id, "ean": ean, "po_line_id": allocated_line_id},
@@ -485,7 +487,10 @@ async def delete_scan(
 
     # Load box for customer_id (needed for ledger entry)
     box_result = await db.execute(
-        select(OutwardBox).where(OutwardBox.id == scan.outward_box_id)
+        select(OutwardBox).where(
+            OutwardBox.id == scan.outward_box_id,
+            OutwardBox.organisation_id == organisation_id,
+        )
     )
     box = box_result.scalar_one()
 
