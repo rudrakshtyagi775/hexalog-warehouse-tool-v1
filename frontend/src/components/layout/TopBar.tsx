@@ -12,8 +12,6 @@ const routeTitles: Record<string, string> = {
   '/close-box':    'Close Box',
   '/customers':    'Customers',
   '/reports':      'Reports',
-  '/dev-logs':     'Development Logs',
-  '/health':       'System Health',
 }
 
 const roleBadgeVariant = (role: Role) => {

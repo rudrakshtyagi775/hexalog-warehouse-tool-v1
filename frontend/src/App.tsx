@@ -12,8 +12,6 @@ import { ActiveBoxesPage } from '@/pages/ActiveBoxes'
 import { CloseBoxPage }    from '@/pages/CloseBox'
 import { CustomersPage }   from '@/pages/Customers'
 import { ReportsPage }     from '@/pages/Reports'
-import { DevLogsPage }     from '@/pages/DevLogs'
-import { HealthPage }      from '@/pages/Health'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -52,8 +50,6 @@ export default function App() {
         <Route path="/close-box"    element={<CloseBoxPage />}    />
         <Route path="/customers"    element={<CustomersPage />}   />
         <Route path="/reports"      element={<ReportsPage />}     />
-        <Route path="/dev-logs"     element={<DevLogsPage />}     />
-        <Route path="/health"       element={<HealthPage />}      />
         <Route path="*"             element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>
