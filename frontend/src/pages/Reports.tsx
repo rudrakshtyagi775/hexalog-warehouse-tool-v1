@@ -1,65 +1,41 @@
-import { BarChart2, Package, ScanLine, CheckSquare, TrendingUp } from 'lucide-react'
+import { BarChart2, CheckSquare, Package, ScanLine, TrendingUp } from 'lucide-react'
+import { useAdminStats, useRecentSubmissions } from '@/hooks/useAdmin'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table'
-import { Alert } from '@/components/ui/Alert'
+import { PageLoader } from '@/components/ui/Spinner'
 
-const MOCK_STATS = [
-  {
-    label: 'Boxes Closed (This Month)',
-    value: '142',
-    icon: CheckSquare,
-    color: 'text-green-600',
-    bg: 'bg-green-50',
-  },
-  {
-    label: 'Total Items Scanned',
-    value: '3,847',
-    icon: ScanLine,
-    color: 'text-blue-600',
-    bg: 'bg-blue-50',
-  },
-  {
-    label: 'POs Uploaded',
-    value: '38',
-    icon: Package,
-    color: 'text-orange-600',
-    bg: 'bg-orange-50',
-  },
-  {
-    label: 'Active Customers',
-    value: '12',
-    icon: TrendingUp,
-    color: 'text-purple-600',
-    bg: 'bg-purple-50',
-  },
-]
-
-const MOCK_SUBMISSIONS = [
-  { inscan: 'INS-TST-20260628-0001', customer: 'Acme Corp', boxes: 5, items: 120, date: '2026-06-28' },
-  { inscan: 'INS-TST-20260627-0003', customer: 'Globex Ltd', boxes: 3, items: 74, date: '2026-06-27' },
-  { inscan: 'INS-TST-20260627-0002', customer: 'Acme Corp', boxes: 8, items: 210, date: '2026-06-27' },
-  { inscan: 'INS-TST-20260626-0005', customer: 'Initech Inc', boxes: 2, items: 45, date: '2026-06-26' },
-  { inscan: 'INS-TST-20260625-0001', customer: 'Umbrella Co', boxes: 11, items: 280, date: '2026-06-25' },
-]
+function formatDate(iso: string | null): string {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+}
 
 export function ReportsPage() {
+  const { data: stats, isLoading: statsLoading } = useAdminStats()
+  const { data: submissionsData, isLoading: subLoading } = useRecentSubmissions()
+
+  const statCards = stats
+    ? [
+        { label: 'Boxes Closed (This Month)', value: stats.inward_boxes_completed_this_month, icon: CheckSquare, color: 'text-green-600', bg: 'bg-green-50' },
+        { label: 'Total Items Scanned',        value: stats.total_items_scanned,              icon: ScanLine,   color: 'text-blue-600',   bg: 'bg-blue-50'  },
+        { label: 'POs Uploaded',               value: stats.total_pos_uploaded,               icon: Package,    color: 'text-orange-600', bg: 'bg-orange-50'},
+        { label: 'Active Customers',           value: stats.active_customers,                  icon: TrendingUp, color: 'text-purple-600', bg: 'bg-purple-50'},
+      ]
+    : []
+
+  if (statsLoading || subLoading) return <PageLoader />
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <Alert variant="info">
-        Reports data shown here uses mock values. Backend reporting endpoints will be wired in a
-        future milestone.
-      </Alert>
-
       {/* Stats grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {MOCK_STATS.map(({ label, value, icon: Icon, color, bg }) => (
+        {statCards.map(({ label, value, icon: Icon, color, bg }) => (
           <Card key={label} className="flex items-start gap-4">
             <div className={`p-2 rounded-md ${bg} flex-shrink-0`}>
               <Icon className={`h-5 w-5 ${color}`} />
             </div>
             <div>
-              <p className="text-2xl font-bold text-gray-900">{value}</p>
+              <p className="text-2xl font-bold text-gray-900">{value.toLocaleString()}</p>
               <p className="text-xs text-gray-500 mt-0.5">{label}</p>
             </div>
           </Card>
@@ -72,34 +48,35 @@ export function ReportsPage() {
           <BarChart2 className="h-4 w-4 text-gray-500" />
           <p className="text-sm font-semibold text-gray-700">Recent Inward Submissions</p>
         </div>
-        <Table>
-          <Thead>
-            <tr>
-              <Th>Inscan Number</Th>
-              <Th>Customer</Th>
-              <Th className="text-right">Boxes</Th>
-              <Th className="text-right">Items</Th>
-              <Th>Date</Th>
-              <Th>Status</Th>
-            </tr>
-          </Thead>
-          <Tbody>
-            {MOCK_SUBMISSIONS.map((row) => (
-              <Tr key={row.inscan}>
-                <Td className="font-mono text-xs">{row.inscan}</Td>
-                <Td className="font-medium text-gray-900">{row.customer}</Td>
-                <Td className="text-right">{row.boxes}</Td>
-                <Td className="text-right">{row.items}</Td>
-                <Td className="text-gray-500">{row.date}</Td>
-                <Td>
-                  <Badge variant="green">Submitted</Badge>
-                </Td>
-              </Tr>
-            ))}
-          </Tbody>
-        </Table>
+        {!submissionsData?.items.length ? (
+          <p className="px-5 py-8 text-center text-sm text-gray-400">No submissions yet.</p>
+        ) : (
+          <Table>
+            <Thead>
+              <tr>
+                <Th>Inscan Number</Th>
+                <Th>Customer</Th>
+                <Th>Box ID</Th>
+                <Th className="text-right">Items</Th>
+                <Th>Date</Th>
+                <Th>Status</Th>
+              </tr>
+            </Thead>
+            <Tbody>
+              {submissionsData.items.map((row) => (
+                <Tr key={row.inscan_number + row.box_id}>
+                  <Td className="font-mono text-xs">{row.inscan_number}</Td>
+                  <Td className="font-medium text-gray-900">{row.customer_name}</Td>
+                  <Td className="font-mono text-xs text-gray-600">{row.box_id}</Td>
+                  <Td className="text-right">{row.scanned_qty}</Td>
+                  <Td className="text-gray-500">{formatDate(row.submitted_at)}</Td>
+                  <Td><Badge variant="green">Submitted</Badge></Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </Table>
+        )}
       </Card>
-
     </div>
   )
 }

@@ -9,6 +9,8 @@ import {
   Users,
   BarChart2,
   LogOut,
+  Shield,
+  ClipboardList,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { cn } from '@/lib/utils'
@@ -25,6 +27,11 @@ const primaryNav = [
 const secondaryNav = [
   { to: '/customers', label: 'Customers', icon: Users     },
   { to: '/reports',   label: 'Reports',   icon: BarChart2 },
+]
+
+const adminNav = [
+  { to: '/admin/users',      label: 'Users',      icon: Shield       },
+  { to: '/admin/audit-logs', label: 'Audit Logs', icon: ClipboardList },
 ]
 
 const outwardNav = [
@@ -69,7 +76,7 @@ function HexalogLogo() {
 }
 
 export function Sidebar() {
-  const { user, organisation, logout } = useAuth()
+  const { user, organisation, logout, isAdmin } = useAuth()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -113,6 +120,18 @@ export function Sidebar() {
         {secondaryNav.map((item) => (
           <NavItem key={item.to} {...item} />
         ))}
+
+        {isAdmin() && (
+          <>
+            <div className="my-4 border-t" style={{ borderColor: '#3D2350' }} />
+            <p className="px-3 mb-2 text-xs font-semibold uppercase tracking-wider" style={{ color: '#744C8A' }}>
+              Admin
+            </p>
+            {adminNav.map((item) => (
+              <NavItem key={item.to} {...item} />
+            ))}
+          </>
+        )}
       </nav>
 
       {/* User footer */}

@@ -17,6 +17,8 @@ import { CreateOutwardBoxPage }   from '@/pages/outward/CreateOutwardBox'
 import { OutwardScanItemsPage }   from '@/pages/outward/OutwardScanItems'
 import { ActiveOutwardBoxesPage } from '@/pages/outward/ActiveOutwardBoxes'
 import { CloseOutwardBoxPage }    from '@/pages/outward/CloseOutwardBox'
+import { AdminUsersPage }         from '@/pages/admin/AdminUsers'
+import { AuditLogsPage }          from '@/pages/admin/AuditLogs'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth()
@@ -60,6 +62,8 @@ export default function App() {
         <Route path="/outward/scan"         element={<OutwardScanItemsPage />}   />
         <Route path="/outward/active-boxes" element={<ActiveOutwardBoxesPage />} />
         <Route path="/outward/close-box"    element={<CloseOutwardBoxPage />}    />
+        <Route path="/admin/users"          element={<AdminUsersPage />}          />
+        <Route path="/admin/audit-logs"     element={<AuditLogsPage />}           />
         <Route path="*"             element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

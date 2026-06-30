@@ -17,6 +17,8 @@ const routeTitles: Record<string, string> = {
   '/outward/scan':          'Scan Outward Items',
   '/outward/active-boxes':  'Active Outward Boxes',
   '/outward/close-box':     'Close Outward Box',
+  '/admin/users':           'Admin — Users',
+  '/admin/audit-logs':      'Admin — Audit Logs',
 }
 
 const roleBadgeVariant = (role: Role) => {

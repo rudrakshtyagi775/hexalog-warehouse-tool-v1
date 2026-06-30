@@ -210,3 +210,70 @@ export interface OutwardBoxCreate {
 export interface OutwardScanCreate {
   ean: string
 }
+
+// ── Admin ─────────────────────────────────────────────────────────────────────
+
+export interface StatsResponse {
+  inward_boxes_completed_this_month: number
+  total_items_scanned: number
+  total_pos_uploaded: number
+  active_customers: number
+}
+
+export interface RecentSubmission {
+  inscan_number: string
+  customer_name: string
+  box_id: string
+  scanned_qty: number
+  submitted_at: string | null
+}
+
+export interface RecentSubmissionsResponse {
+  items: RecentSubmission[]
+}
+
+export interface AuditLogEntry {
+  id: number
+  module: string
+  action: string
+  resource_type: string
+  resource_id: number | null
+  user_id: number | null
+  ip_address: string | null
+  created_at: string
+}
+
+export interface AuditLogListResponse {
+  items: AuditLogEntry[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface UserRoleEntry {
+  role: Role
+  created_at: string
+}
+
+export interface AdminUserResponse {
+  id: number
+  email: string
+  full_name: string
+  is_active: boolean
+  roles: UserRoleEntry[]
+  created_at: string
+}
+
+export interface AdminUserCreate {
+  email: string
+  full_name: string
+  password: string
+  roles: Role[]
+}
+
+export interface OrgResponse {
+  id: number
+  name: string
+  is_active: boolean
+  created_at: string
+}
