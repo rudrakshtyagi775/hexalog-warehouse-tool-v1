@@ -1,9 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.customer import CustomerCreate, CustomerUpdate
 from app.models.enums import CustomerStatusEnum
-
+from app.schemas.customer import CustomerCreate, CustomerUpdate
 
 # ── CustomerCreate: code validation ──────────────────────────────────────────
 

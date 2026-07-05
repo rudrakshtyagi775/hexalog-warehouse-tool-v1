@@ -12,20 +12,20 @@ import pytest_asyncio
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 # Ensure TEST_DATABASE_URL is available before any app import triggers config load
 _test_db_url = os.environ.get("TEST_DATABASE_URL", "")
 
-from sqlalchemy import text
+from sqlalchemy import text  # noqa: E402
 
-from app.database import get_db
-from app.main import app
-from app.models.base import Base
-from app.models.enums import UserRoleEnum
-from app.models.organisation import Organisation
-from app.models.user import User, UserOrganisation, UserRole
-from app.services.password_service import hash_password
+from app.database import get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.base import Base  # noqa: E402
+from app.models.enums import UserRoleEnum  # noqa: E402
+from app.models.organisation import Organisation  # noqa: E402
+from app.models.user import User, UserOrganisation, UserRole  # noqa: E402
+from app.services.password_service import hash_password  # noqa: E402
 
 # All PostgreSQL enum types used by ORM models with create_type=False.
 # create_all() skips them so we must create them explicitly before table creation.

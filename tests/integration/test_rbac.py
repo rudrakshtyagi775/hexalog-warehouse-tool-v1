@@ -3,12 +3,6 @@ RBAC tests verify that role shorthands enforce correctly.
 These tests use a dummy protected endpoint defined inline for the test module.
 """
 import pytest
-from fastapi import Depends
-from fastapi.testclient import TestClient
-
-from app.dependencies.auth import require_admin, require_inward_operator, require_packer
-from app.main import app
-from app.schemas.auth import CurrentUser
 
 LOGIN_URL = "/api/auth/login"
 

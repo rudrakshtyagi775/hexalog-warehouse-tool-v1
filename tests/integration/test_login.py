@@ -2,8 +2,6 @@ import statistics
 import time
 
 import pytest
-import pytest_asyncio
-
 
 LOGIN_URL = "/api/auth/login"
 

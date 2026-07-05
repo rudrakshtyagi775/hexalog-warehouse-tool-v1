@@ -1,7 +1,8 @@
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Text, func
-from sqlalchemy.dialects.postgresql import ENUM as PGEnum, INET, JSONB
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
+from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base

@@ -289,8 +289,8 @@ async def test_add_outward_scan_no_inward_stock_note(
 async def test_delete_scan_from_closed_box_fails(
     client, packer_user, org, po_with_line, db, customer
 ):
-    from app.models.outward import OutwardScan
     from app.models.enums import OutwardScanResultEnum
+    from app.models.outward import OutwardScan
     # Create a closed box with an accepted scan directly in DB
     closed_box = OutwardBox(
         box_id="OB-TST-099003",
@@ -319,3 +319,74 @@ async def test_delete_scan_from_closed_box_fails(
     )
     assert resp.status_code == 400
     assert "closed" in resp.json()["detail"].lower()
+
+
+# ── OUT-10: one active box per packer ────────────────────────────────────────
+
+async def test_scan_into_second_box_blocked_while_first_in_use(
+    client, packer_user, org, customer, po_with_line, db
+):
+    """Once a packer's box transitions to in_use via a scan, scanning into a
+    different box for the same packer must be rejected with the PRD message —
+    not the raw IntegrityError from the DB's one-in_use-box-per-packer index."""
+    _, line = po_with_line
+    line2 = OutwardPOLine(
+        outward_po_id=line.outward_po_id,
+        organisation_id=org.id,
+        ean="9999999999999",
+        ordered_qty=5,
+        packed_qty=0,
+    )
+    db.add(line2)
+    await db.flush()
+
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    box1 = (await client.post(
+        "/api/outward/boxes", json={"customer_id": customer.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )).json()
+    box2 = (await client.post(
+        "/api/outward/boxes", json={"customer_id": customer.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )).json()
+
+    first_scan = await client.post(
+        f"/api/outward/boxes/{box1['box_id']}/scans",
+        json={"ean": "1234567890123"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert first_scan.status_code == 201
+
+    second_scan = await client.post(
+        f"/api/outward/boxes/{box2['box_id']}/scans",
+        json={"ean": "9999999999999"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert second_scan.status_code == 400
+    assert second_scan.json()["detail"] == (
+        "Mark the current box full before starting another box."
+    )
+
+
+async def test_continuing_scans_into_own_in_use_box_allowed(
+    client, packer_user, org, customer, po_with_line
+):
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    box = (await client.post(
+        "/api/outward/boxes", json={"customer_id": customer.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )).json()
+
+    first = await client.post(
+        f"/api/outward/boxes/{box['box_id']}/scans",
+        json={"ean": "1234567890123"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert first.status_code == 201
+
+    second = await client.post(
+        f"/api/outward/boxes/{box['box_id']}/scans",
+        json={"ean": "1234567890123"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert second.status_code == 201

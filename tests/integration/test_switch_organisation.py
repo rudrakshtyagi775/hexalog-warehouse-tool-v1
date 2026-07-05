@@ -15,10 +15,11 @@ Behaviour under test (June 18 redesign):
 
 from sqlalchemy import select
 
-from app.models.enums import UserRoleEnum
-from app.models.user import Session as SessionModel, User, UserOrganisation, UserRole
 from app.models.audit_log import AuditLog
+from app.models.enums import UserRoleEnum
 from app.models.organisation import Organisation
+from app.models.user import Session as SessionModel
+from app.models.user import User, UserOrganisation, UserRole
 from app.services.auth_service import _hash_refresh_token
 from app.services.jwt_service import decode_access_token
 

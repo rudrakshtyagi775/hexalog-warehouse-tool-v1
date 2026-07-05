@@ -1,9 +1,10 @@
 import csv
 import io
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import structlog
 from fastapi import HTTPException, status
+from sqlalchemy import func as sql_func
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,14 @@ from app.models.inward import (
     InwardBox,
     InwardPO,
     InwardPOLine,
+    InwardReference,
     InwardScan,
+)
+from app.schemas.inward import (
+    InwardBoxListResponse,
+    InwardBoxSummary,
+    InwardReferenceListResponse,
+    InwardReferenceSummary,
 )
 from app.services.audit_service import write_audit_log
 
@@ -146,7 +154,11 @@ async def upload_po(
         resource_id=po.id,
         user_id=uploaded_by,
         organisation_id=organisation_id,
-        after_data={"po_number": po_number, "customer_id": customer_id, "line_count": len(lines_data)},
+        after_data={
+            "po_number": po_number,
+            "customer_id": customer_id,
+            "line_count": len(lines_data),
+        },
         ip_address=ip_address,
     )
 
@@ -175,7 +187,8 @@ async def _next_counter(
     """Atomic increment. Returns the new last_value (starts at 1)."""
     result = await db.execute(
         text("""
-            INSERT INTO counters (counter_type, organisation_id, customer_code, date_key, last_value)
+            INSERT INTO counters
+                (counter_type, organisation_id, customer_code, date_key, last_value)
             VALUES (:ct, :org, :code, :dk, 1)
             ON CONFLICT (counter_type, organisation_id, customer_code, date_key)
             DO UPDATE SET last_value = counters.last_value + 1
@@ -184,6 +197,186 @@ async def _next_counter(
         {"ct": counter_type.value, "org": organisation_id, "code": customer_code, "dk": date_key},
     )
     return result.scalar_one()
+
+
+# ── InwardReference: get-or-create ───────────────────────────────────────────
+
+async def get_or_create_reference(
+    db: AsyncSession,
+    *,
+    organisation_id: int,
+    customer_id: int,
+    po_number: str | None,
+    invoice_number: str | None,
+    created_by: int,
+    ip_address: str | None,
+) -> tuple[InwardReference, bool]:
+    """Find an existing open reference for this customer + PO/invoice, or create one.
+
+    Returns (reference, is_duplicate). A duplicate never blocks (IN-3) — the
+    caller surfaces the PRD confirm-dialog string and lets the user append or
+    cancel.
+    """
+    from app.models.customer import Customer
+
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organisation_id == organisation_id,
+        )
+    )
+    if cust_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    dup_where = [
+        InwardReference.organisation_id == organisation_id,
+        InwardReference.customer_id == customer_id,
+        InwardReference.status == InwardReferenceStatusEnum.open,
+    ]
+    match_conditions = []
+    if po_number:
+        match_conditions.append(InwardReference.po_number == po_number)
+    if invoice_number:
+        match_conditions.append(InwardReference.invoice_number == invoice_number)
+
+    existing = None
+    if match_conditions:
+        from sqlalchemy import or_
+
+        existing_result = await db.execute(
+            select(InwardReference).where(*dup_where, or_(*match_conditions))
+        )
+        existing = existing_result.scalars().first()
+
+    if existing is not None:
+        return existing, True
+
+    reference = InwardReference(
+        organisation_id=organisation_id,
+        customer_id=customer_id,
+        po_number=po_number,
+        invoice_number=invoice_number,
+        status=InwardReferenceStatusEnum.open,
+        created_by=created_by,
+    )
+    db.add(reference)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="reference_created",
+        resource_type="inward_reference",
+        resource_id=reference.id,
+        user_id=created_by,
+        organisation_id=organisation_id,
+        after_data={
+            "customer_id": customer_id,
+            "po_number": po_number,
+            "invoice_number": invoice_number,
+        },
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    await db.refresh(reference)
+    return reference, False
+
+
+# ── InwardReference: list ─────────────────────────────────────────────────────
+
+async def list_references(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    customer_id: int | None = None,
+    status_filter: InwardReferenceStatusEnum | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> InwardReferenceListResponse:
+    from app.models.customer import Customer
+
+    base_where = [InwardReference.organisation_id == org_id]
+    if customer_id is not None:
+        base_where.append(InwardReference.customer_id == customer_id)
+    if status_filter is not None:
+        base_where.append(InwardReference.status == status_filter)
+
+    total = await db.scalar(
+        select(sql_func.count()).select_from(InwardReference).where(*base_where)
+    ) or 0
+
+    result = await db.execute(
+        select(InwardReference, Customer.name.label("customer_name"))
+        .join(Customer, InwardReference.customer_id == Customer.id)
+        .where(*base_where)
+        .order_by(InwardReference.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = result.all()
+
+    return InwardReferenceListResponse(
+        items=[
+            InwardReferenceSummary(
+                id=ref.id,
+                customer_id=ref.customer_id,
+                customer_name=customer_name,
+                po_number=ref.po_number,
+                invoice_number=ref.invoice_number,
+                status=ref.status,
+                created_at=ref.created_at,
+            )
+            for ref, customer_name in rows
+        ],
+        total=total,
+    )
+
+
+# ── InwardReference: finish delivery ─────────────────────────────────────────
+
+async def finish_reference(
+    db: AsyncSession,
+    *,
+    reference_id: int,
+    organisation_id: int,
+    finished_by: int,
+    ip_address: str | None,
+) -> InwardReference:
+    """IN-11: mark a reference Completed. No new boxes accepted after this."""
+    result = await db.execute(
+        select(InwardReference).where(
+            InwardReference.id == reference_id,
+            InwardReference.organisation_id == organisation_id,
+        )
+    )
+    reference = result.scalar_one_or_none()
+    if reference is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reference not found")
+    if reference.status == InwardReferenceStatusEnum.completed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Reference is already completed."
+        )
+
+    reference.status = InwardReferenceStatusEnum.completed
+    reference.completed_at = datetime.now(UTC)
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="reference_finished",
+        resource_type="inward_reference",
+        resource_id=reference.id,
+        user_id=finished_by,
+        organisation_id=organisation_id,
+        before_data={"status": "open"},
+        after_data={"status": "completed"},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    await db.refresh(reference)
+    return reference
 
 
 # ── Box: create ───────────────────────────────────────────────────────────────
@@ -196,12 +389,12 @@ async def create_box(
     created_by: int,
     user_roles: list[UserRoleEnum],
     ip_address: str | None,
+    inward_reference_id: int | None = None,
+    box_number: str | None = None,
 ) -> InwardBox:
-    # 1. Packer single-active-box guard (admin bypasses)
-    is_packer_only = (
-        UserRoleEnum.packer in user_roles and UserRoleEnum.admin not in user_roles
-    )
-    if is_packer_only:
+    # 1. Single-active-box guard (admin bypasses)
+    is_non_admin = UserRoleEnum.admin not in user_roles
+    if is_non_admin:
         # Advisory lock serialises concurrent create_box calls for the same packer,
         # eliminating the SELECT-then-INSERT race where two requests both see no
         # active box and both proceed to create one.
@@ -233,6 +426,39 @@ async def create_box(
     if customer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
 
+    # 2b. Validate reference (if given) and box_number uniqueness within it (IN-4)
+    if inward_reference_id is not None:
+        ref_result = await db.execute(
+            select(InwardReference).where(
+                InwardReference.id == inward_reference_id,
+                InwardReference.organisation_id == organisation_id,
+            )
+        )
+        reference = ref_result.scalar_one_or_none()
+        if reference is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Inward reference not found"
+            )
+        if reference.status == InwardReferenceStatusEnum.completed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Delivery is already finished; no new boxes are accepted.",
+            )
+        if box_number:
+            dup_result = await db.execute(
+                select(InwardBox).where(
+                    InwardBox.inward_reference_id == inward_reference_id,
+                    InwardBox.box_number == box_number,
+                    InwardBox.is_deleted == False,  # noqa: E712
+                )
+            )
+            if dup_result.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Box number already used for this PO/Invoice. "
+                    "Enter a different box number.",
+                )
+
     # 3. Generate unique Box ID via atomic counter
     n = await _next_counter(
         db,
@@ -250,6 +476,8 @@ async def create_box(
         status=InwardBoxStatusEnum.scanning,
         scanned_qty=0,
         created_by=created_by,
+        inward_reference_id=inward_reference_id,
+        box_number=box_number,
     )
     db.add(box)
     await db.flush()  # populates box.id before writing the audit log
@@ -262,7 +490,12 @@ async def create_box(
         resource_id=box.id,
         user_id=created_by,
         organisation_id=organisation_id,
-        after_data={"box_id": box_id, "customer_id": customer_id},
+        after_data={
+            "box_id": box_id,
+            "customer_id": customer_id,
+            "inward_reference_id": inward_reference_id,
+            "box_number": box_number,
+        },
         ip_address=ip_address,
     )
 
@@ -329,7 +562,10 @@ async def close_box(
     if box.scanned_qty != physical_qty:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Scanned Quantity and Physical Quantity do not match. Please verify before submission.",
+            detail=(
+                "Scanned Quantity and Physical Quantity do not match."
+                " Please verify before submission."
+            ),
         )
 
     box.status = InwardBoxStatusEnum.pending_verification
@@ -475,6 +711,7 @@ async def add_scan(
     code_type: InwardCodeTypeEnum,
     created_by: int,
     ip_address: str | None,
+    is_manual_entry: bool = False,
 ) -> tuple[InwardScan, str | None]:
     """Allocate EAN to oldest open PO line (FIFO) and insert a scan row.
 
@@ -510,7 +747,9 @@ async def add_scan(
         .limit(1)
     )
     if any_line_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="EAN not found in open POs")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="EAN not found in open POs"
+        )
 
     # 3. FIFO allocation with conditional UPDATE retry loop
     allocated_line_id: int | None = None
@@ -565,6 +804,7 @@ async def add_scan(
         inward_po_line_id=allocated_line_id,
         ean=ean,
         code_type=code_type,
+        is_manual_entry=is_manual_entry,
         is_deleted=False,
         created_by=created_by,
     )
@@ -687,3 +927,119 @@ async def delete_scan(
     await db.commit()
     await db.refresh(scan)
     return scan
+
+
+# ── Box: list (history) ───────────────────────────────────────────────────────
+
+async def list_boxes(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    status_filter: InwardBoxStatusEnum | None = None,
+    customer_id: int | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> InwardBoxListResponse:
+    from app.models.customer import Customer
+
+    base_where = [
+        InwardBox.organisation_id == org_id,
+        InwardBox.is_deleted == False,  # noqa: E712
+    ]
+    if status_filter is not None:
+        base_where.append(InwardBox.status == status_filter)
+    if customer_id is not None:
+        base_where.append(InwardBox.customer_id == customer_id)
+    if from_date is not None:
+        from_dt = datetime(from_date.year, from_date.month, from_date.day, tzinfo=UTC)
+        base_where.append(InwardBox.created_at >= from_dt)
+    if to_date is not None:
+        from datetime import timedelta
+        to_dt = datetime(to_date.year, to_date.month, to_date.day, tzinfo=UTC)
+        base_where.append(InwardBox.created_at < to_dt + timedelta(days=1))
+
+    total = await db.scalar(
+        select(sql_func.count()).select_from(InwardBox).where(*base_where)
+    ) or 0
+
+    result = await db.execute(
+        select(InwardBox, Customer.name.label("customer_name"))
+        .join(Customer, InwardBox.customer_id == Customer.id)
+        .where(*base_where)
+        .order_by(InwardBox.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = result.all()
+
+    return InwardBoxListResponse(
+        items=[
+            InwardBoxSummary(
+                box_id=box.box_id,
+                customer_name=customer_name,
+                status=box.status,
+                scanned_qty=box.scanned_qty,
+                inscan_number=box.inscan_number,
+                created_at=box.created_at,
+                submitted_at=box.submitted_at,
+            )
+            for box, customer_name in rows
+        ],
+        total=total,
+    )
+
+
+# ── Box: reopen ───────────────────────────────────────────────────────────────
+
+async def reopen_box(
+    db: AsyncSession,
+    *,
+    box_id: str,
+    organisation_id: int,
+    reopened_by: int,
+    ip_address: str | None,
+) -> InwardBox:
+    """Reset a pending_verification box back to scanning. Clears physical_qty."""
+    result = await db.execute(
+        select(InwardBox).where(
+            InwardBox.box_id == box_id,
+            InwardBox.organisation_id == organisation_id,
+        )
+    )
+    box = result.scalar_one_or_none()
+    if box is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Box not found")
+    if box.status != InwardBoxStatusEnum.pending_verification:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Box can only be reopened from pending verification state.",
+        )
+
+    old_physical_qty = box.physical_qty
+    box.status = InwardBoxStatusEnum.scanning
+    box.physical_qty = None
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.inward,
+        action="box_reopened",
+        resource_type="inward_box",
+        resource_id=box.id,
+        user_id=reopened_by,
+        organisation_id=organisation_id,
+        before_data={"status": "pending_verification", "physical_qty": old_physical_qty},
+        after_data={"status": "scanning"},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+
+    # Reload with scans for router response
+    reloaded = await db.execute(
+        select(InwardBox)
+        .options(selectinload(InwardBox.scans))
+        .where(InwardBox.id == box.id)
+    )
+    return reloaded.scalar_one()

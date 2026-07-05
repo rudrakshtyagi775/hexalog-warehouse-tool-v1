@@ -1,8 +1,30 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
-from app.models.enums import AuditModuleEnum, UserRoleEnum
+from app.models.enums import (
+    AuditModuleEnum,
+    OutwardPoStatusEnum,
+    OutwardScanResultEnum,
+    UserRoleEnum,
+)
+
+
+class UpdateUserRequest(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    is_active: bool | None = None
+
+
+class AssignRoleRequest(BaseModel):
+    role: UserRoleEnum
+
+
+class AdminPasswordResetRequest(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class OrgResponse(BaseModel):
@@ -60,11 +82,96 @@ class AuditLogListResponse(BaseModel):
     page_size: int
 
 
+class OrgUpdateRequest(BaseModel):
+    model_config = {"str_strip_whitespace": True}
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    is_active: bool | None = None
+
+
 class StatsResponse(BaseModel):
     inward_boxes_completed_this_month: int
     total_items_scanned: int
     total_pos_uploaded: int
     active_customers: int
+    outward_boxes_this_month: int
+    outward_scans_this_month: int
+    open_po_count: int
+
+
+class OutwardPOReportRow(BaseModel):
+    po_number: str
+    customer_name: str
+    ean: str
+    description: str | None
+    ordered_qty: int
+    packed_qty: int
+    remaining: int
+    status: OutwardPoStatusEnum
+    uploaded_at: datetime
+
+
+class OutwardPOReportResponse(BaseModel):
+    items: list[OutwardPOReportRow]
+    total: int
+    from_date: date
+    to_date: date
+
+
+class ItemPackingReportRow(BaseModel):
+    timestamp: datetime
+    user_name: str | None
+    box_id: str
+    ean: str
+    scan_result: OutwardScanResultEnum
+    allocated_po: str | None
+    reject_reason: str | None
+    stock_flagged: bool
+
+
+class ItemPackingReportResponse(BaseModel):
+    items: list[ItemPackingReportRow]
+    total: int
+    from_date: date
+    to_date: date
+
+
+class VarianceReportRow(BaseModel):
+    customer_name: str
+    ean: str
+    total_inward_qty: int
+    total_outward_qty: int
+    current_balance: int
+    stock_flagged_count: int
+    last_movement_date: datetime | None
+
+
+class VarianceReportResponse(BaseModel):
+    items: list[VarianceReportRow]
+    total: int
+    from_date: date
+    to_date: date
+
+
+class InscanReportRow(BaseModel):
+    inscan_number: str
+    customer_name: str
+    po_number: str | None
+    invoice_number: str | None
+    box_number: str | None
+    ean: str
+    scanned_qty: int
+    physical_qty: int | None
+    variance: int
+    date: datetime
+    user_name: str | None
+
+
+class InscanReportResponse(BaseModel):
+    items: list[InscanReportRow]
+    total: int
+    from_date: date
+    to_date: date
 
 
 class RecentSubmission(BaseModel):

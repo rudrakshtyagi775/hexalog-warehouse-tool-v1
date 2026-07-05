@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.schemas.auth import (
@@ -23,7 +24,6 @@ from app.services.auth_service import (
     refresh_session,
     switch_organisation,
 )
-from app.config import settings
 from app.utils.request import get_client_ip
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -91,7 +91,9 @@ async def refresh_endpoint(
     db: AsyncSession = Depends(get_db),
 ) -> RefreshResponse:
     if not refresh_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing refresh token"
+        )
 
     result = await refresh_session(db, refresh_token, ip_address=get_client_ip(request))
     _set_refresh_cookie(response, result.new_refresh_token)

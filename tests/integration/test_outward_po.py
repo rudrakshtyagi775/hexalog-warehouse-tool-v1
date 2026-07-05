@@ -50,6 +50,29 @@ async def test_upload_outward_po_success(client, inward_operator_user, org, cust
     assert body["lines"][0]["packed_qty"] == 0
 
 
+async def test_upload_outward_po_consolidates_duplicate_ean(
+    client, inward_operator_user, org, customer
+):
+    """OUT-3: duplicate EAN rows within one CSV are summed into a single line
+    rather than violating the (outward_po_id, ean) unique constraint."""
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
+    csv_bytes = (
+        b"po_number,ean,ordered_qty,description\n"
+        b"OUT-DUP-EAN-001,1234567890123,5,Widget\n"
+        b"OUT-DUP-EAN-001,1234567890123,7,Widget\n"
+    )
+    resp = await client.post(
+        "/api/outward/pos",
+        data={"po_number": "OUT-DUP-EAN-001", "customer_id": customer.id},
+        files={"file": ("po.csv", csv_bytes, "text/csv")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert len(body["lines"]) == 1
+    assert body["lines"][0]["ordered_qty"] == 12
+
+
 async def test_upload_outward_po_duplicate(client, inward_operator_user, org, customer):
     token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     csv_bytes = _make_csv("OUT-DUP-001")

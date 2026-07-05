@@ -20,6 +20,8 @@ dependencies = [
     "bcrypt>=4.0",
     "structlog>=24.1",
     "python-multipart>=0.0.9",
+    "weasyprint>=62",
+    "qrcode>=7.4",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +46,11 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = ["alembic/versions/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+ignore = ["UP042"]  # project deliberately uses (str, enum.Enum) for PG enum compatibility
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]  # long test names and docstrings are acceptable in test files

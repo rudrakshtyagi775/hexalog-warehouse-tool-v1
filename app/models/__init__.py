@@ -1,6 +1,8 @@
 # Re-export all ORM models so that `alembic revision --autogenerate`
 # detects every table. Import order matters for FK resolution.
+from app.models.audit_log import AuditLog
 from app.models.base import Base, TimestampMixin
+from app.models.customer import Customer
 from app.models.enums import (
     AuditModuleEnum,
     CounterTypeEnum,
@@ -14,24 +16,23 @@ from app.models.enums import (
     OutwardScanResultEnum,
     UserRoleEnum,
 )
-from app.models.organisation import Organisation
-from app.models.user import LoginAttempt, Session, User, UserOrganisation, UserRole
-from app.models.audit_log import AuditLog
-from app.models.customer import Customer
 from app.models.inward import (
     Counter,
+    InventoryLedgerEntry,
+    InwardBox,
     InwardPO,
     InwardPOLine,
-    InwardBox,
+    InwardReference,
     InwardScan,
-    InventoryLedgerEntry,
 )
+from app.models.organisation import Organisation
 from app.models.outward import (
+    OutwardBox,
     OutwardPO,
     OutwardPOLine,
-    OutwardBox,
     OutwardScan,
 )
+from app.models.user import LoginAttempt, Session, User, UserOrganisation, UserRole
 
 __all__ = [
     "Base",
@@ -60,6 +61,7 @@ __all__ = [
     "Counter",
     "InwardPO",
     "InwardPOLine",
+    "InwardReference",
     "InwardBox",
     "InwardScan",
     "InventoryLedgerEntry",

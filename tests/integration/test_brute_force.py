@@ -19,7 +19,7 @@ Design note — READ COMMITTED isolation:
 """
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -110,14 +110,14 @@ async def test_account_locks_after_max_failures(client, committed_session, commi
     await committed_session.refresh(u)
     assert u.failed_attempts == settings.LOGIN_MAX_FAILURES
     assert u.locked_until is not None
-    assert u.locked_until > datetime.now(tz=timezone.utc)
+    assert u.locked_until > datetime.now(tz=UTC)
 
 
 # ── 3. Locked account rejects every login ────────────────────────────────────
 
 async def test_locked_account_rejects_login_with_correct_password(client, committed_session, committed_org):
     """An account under active lockout returns 401 even with the correct password."""
-    future_lock = datetime.now(tz=timezone.utc) + timedelta(
+    future_lock = datetime.now(tz=UTC) + timedelta(
         minutes=settings.LOGIN_LOCKOUT_MINUTES
     )
     u = await _make_committed_user(committed_session, committed_org, locked_until=future_lock)
@@ -130,7 +130,7 @@ async def test_locked_account_rejects_login_with_correct_password(client, commit
 
 async def test_locked_account_rejects_login_with_wrong_password(client, committed_session, committed_org):
     """An account under active lockout returns the same 401 with a wrong password."""
-    future_lock = datetime.now(tz=timezone.utc) + timedelta(
+    future_lock = datetime.now(tz=UTC) + timedelta(
         minutes=settings.LOGIN_LOCKOUT_MINUTES
     )
     u = await _make_committed_user(committed_session, committed_org, locked_until=future_lock)
@@ -145,7 +145,7 @@ async def test_locked_account_rejects_login_with_wrong_password(client, committe
 
 async def test_lockout_expiry_allows_login(client, committed_session, committed_org):
     """An account whose locked_until is in the past can log in normally."""
-    past_lock = datetime.now(tz=timezone.utc) - timedelta(seconds=1)
+    past_lock = datetime.now(tz=UTC) - timedelta(seconds=1)
     u = await _make_committed_user(committed_session, committed_org, locked_until=past_lock)
 
     resp = await client.post(LOGIN_URL, json=_payload(u, committed_org))
@@ -159,7 +159,7 @@ async def test_lockout_expiry_allows_login(client, committed_session, committed_
 async def test_successful_login_resets_failed_attempts(client, db, committed_session, committed_org):
     """A successful login zeroes failed_attempts and clears locked_until."""
     from sqlalchemy import select as _select
-    past_lock = datetime.now(tz=timezone.utc) - timedelta(seconds=1)
+    past_lock = datetime.now(tz=UTC) - timedelta(seconds=1)
     u = await _make_committed_user(
         committed_session, committed_org, failed_attempts=5, locked_until=past_lock
     )
@@ -180,7 +180,7 @@ async def test_successful_login_resets_failed_attempts(client, db, committed_ses
 async def test_ip_rate_limit_raises_429():
     """Seeding login_attempts at the limit causes the next call to raise 429."""
     test_ip = _unique_ip()
-    window_start = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
+    window_start = datetime.now(tz=UTC).replace(second=0, microsecond=0)
 
     async with _auth_svc._side_effect_session_factory() as rate_session:
         await rate_session.execute(
@@ -214,7 +214,7 @@ async def test_ip_rate_limit_skips_when_ip_is_none():
 async def test_ip_rate_limit_new_window_resets_count():
     """A saturated counter from a prior minute does not affect the current minute."""
     test_ip = _unique_ip()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     old_window = (now - timedelta(minutes=2)).replace(second=0, microsecond=0)
 
     async with _auth_svc._side_effect_session_factory() as rate_session:

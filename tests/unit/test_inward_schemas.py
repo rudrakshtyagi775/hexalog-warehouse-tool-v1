@@ -1,9 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.inward import BoxClose, BoxCreate, POLineCreate, ScanCreate
 from app.models.enums import InwardCodeTypeEnum
-
+from app.schemas.inward import BoxClose, BoxCreate, POLineCreate, ScanCreate
 
 # ── POLineCreate ──────────────────────────────────────────────────────────────
 

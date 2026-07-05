@@ -5,7 +5,6 @@ from pydantic import BaseModel, EmailStr
 
 from app.models.enums import UserRoleEnum
 
-
 # ── Request schemas ───────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):

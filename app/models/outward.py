@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -21,9 +23,6 @@ class OutwardPO(TimestampMixin, Base):
     """One row per outward PO/invoice per organisation."""
 
     __tablename__ = "outward_pos"
-    __table_args__ = (
-        UniqueConstraint("organisation_id", "po_number", name="uq_outward_pos_org_po"),
-    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organisation_id: Mapped[int] = mapped_column(
@@ -56,6 +55,13 @@ class OutwardPOLine(Base):
     __tablename__ = "outward_po_lines"
     __table_args__ = (
         Index("ix_outward_po_lines_ean", "organisation_id", "ean"),
+        UniqueConstraint("outward_po_id", "ean", name="uq_po_lines_po_ean"),
+        Index(
+            "idx_po_lines_org_ean_remaining",
+            "organisation_id",
+            "ean",
+            postgresql_where=text("packed_qty < ordered_qty"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -79,10 +85,17 @@ class OutwardBox(TimestampMixin, Base):
     __tablename__ = "outward_boxes"
     __table_args__ = (
         Index("ix_outward_boxes_org_status", "organisation_id", "status"),
+        UniqueConstraint("organisation_id", "box_id", name="uq_outward_boxes_org_boxid"),
+        Index(
+            "uq_outward_boxes_packer_active",
+            "created_by",
+            unique=True,
+            postgresql_where=text("status = 'in_use'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    box_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    box_id: Mapped[str] = mapped_column(Text, nullable=False)
     organisation_id: Mapped[int] = mapped_column(
         ForeignKey("organisations.id", ondelete="RESTRICT"), nullable=False
     )
@@ -94,6 +107,8 @@ class OutwardBox(TimestampMixin, Base):
         default=OutwardBoxStatusEnum.open,
         nullable=False,
     )
+    print_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -127,6 +142,12 @@ class OutwardScan(Base):
     scan_result: Mapped[OutwardScanResultEnum] = mapped_column(
         PGEnum(OutwardScanResultEnum, name="outward_scan_result_enum", create_type=False),
         nullable=False,
+    )
+    stock_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

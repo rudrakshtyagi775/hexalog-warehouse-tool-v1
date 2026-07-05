@@ -108,6 +108,43 @@ class InwardPOLine(Base):
     inward_po: Mapped["InwardPO"] = relationship(back_populates="lines", lazy="raise")
 
 
+class InwardReference(TimestampMixin, Base):
+    """One delivery reference grouping multiple inward boxes under a single PO or invoice."""
+
+    __tablename__ = "inward_references"
+    __table_args__ = (
+        Index("idx_inward_refs_customer", "customer_id"),
+        Index("idx_inward_refs_org_status", "organisation_id", "status"),
+        Index("idx_inward_refs_customer_po", "customer_id", "po_number"),
+        Index("idx_inward_refs_customer_inv", "customer_id", "invoice_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organisation_id: Mapped[int] = mapped_column(
+        ForeignKey("organisations.id", ondelete="RESTRICT"), nullable=False
+    )
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False
+    )
+    po_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    invoice_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[InwardReferenceStatusEnum] = mapped_column(
+        PGEnum(InwardReferenceStatusEnum, name="inward_reference_status_enum", create_type=False),
+        default=InwardReferenceStatusEnum.open,
+        nullable=False,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    boxes: Mapped[list["InwardBox"]] = relationship(
+        back_populates="inward_reference", lazy="raise"
+    )
+
+
 class InwardBox(TimestampMixin, Base):
     """One packing box. Box ID (B-CUSTCODE-000001) generated via Counter.
 
@@ -139,6 +176,15 @@ class InwardBox(TimestampMixin, Base):
     submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    inward_reference_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inward_references.id", ondelete="RESTRICT"), nullable=True
+    )
+    box_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -153,6 +199,9 @@ class InwardBox(TimestampMixin, Base):
         back_populates="box",
         foreign_keys="[InwardScan.inward_box_id]",
         lazy="raise",
+    )
+    inward_reference: Mapped["InwardReference | None"] = relationship(
+        back_populates="boxes", lazy="raise"
     )
 
 
@@ -177,6 +226,7 @@ class InwardScan(Base):
         default=InwardCodeTypeEnum.ean,
         nullable=False,
     )
+    is_manual_entry: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -203,7 +253,7 @@ class InventoryLedgerEntry(Base):
 
     __tablename__ = "inventory_ledger_entries"
     __table_args__ = (
-        Index("idx_ledger_org_ean", "organisation_id", "ean"),
+        Index("idx_ledger_org_customer_ean", "organisation_id", "customer_id", "ean"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

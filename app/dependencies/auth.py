@@ -82,3 +82,6 @@ def require_roles(*allowed_roles: UserRoleEnum):
 require_admin = require_roles(UserRoleEnum.admin)
 require_inward_operator = require_roles(UserRoleEnum.inward_operator, UserRoleEnum.admin)
 require_packer = require_roles(UserRoleEnum.packer, UserRoleEnum.admin)
+require_packer_or_inward_operator = require_roles(
+    UserRoleEnum.packer, UserRoleEnum.inward_operator, UserRoleEnum.admin
+)

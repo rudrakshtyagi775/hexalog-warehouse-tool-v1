@@ -5,7 +5,6 @@ from app.models.customer import Customer
 from app.models.enums import CustomerStatusEnum
 from app.models.organisation import Organisation
 
-
 BASE = "/api/customers"
 
 
@@ -331,8 +330,9 @@ async def test_create_customer_duplicate_code_other_org_ok(
 
 @pytest.mark.asyncio
 async def test_create_customer_audit_log_written(client, admin_token, db):
-    from app.models.audit_log import AuditLog
     from sqlalchemy import select as sa_select
+
+    from app.models.audit_log import AuditLog
     resp = await client.post(
         BASE,
         json={"name": "Audit Test", "code": "AUD"},
@@ -466,8 +466,9 @@ async def test_update_customer_no_op_returns_200(client, admin_token, active_cus
 
 @pytest.mark.asyncio
 async def test_update_customer_audit_log_written(client, admin_token, active_customer, db):
-    from app.models.audit_log import AuditLog
     from sqlalchemy import select as sa_select
+
+    from app.models.audit_log import AuditLog
     resp = await client.patch(
         f"{BASE}/{active_customer.id}",
         json={"name": "Audit Changed"},

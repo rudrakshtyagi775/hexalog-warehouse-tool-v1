@@ -1,8 +1,10 @@
 import csv
 import io
+from datetime import UTC, date, datetime, timedelta
 
 import structlog
 from fastapi import HTTPException, status
+from sqlalchemy import func as sql_func
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,17 @@ from app.models.enums import (
 )
 from app.models.inward import InventoryLedgerEntry
 from app.models.outward import OutwardBox, OutwardPO, OutwardPOLine, OutwardScan
+from app.schemas.outward import (
+    LabelGenerateResponse,
+    LabelHistoryItem,
+    LabelHistoryResponse,
+    OpenPOListResponse,
+    OpenPOSummary,
+    OutwardBoxListResponse,
+    OutwardBoxSummary,
+    OutwardPOPreviewResponse,
+    OutwardPOPreviewRow,
+)
 from app.services.audit_service import write_audit_log
 from app.services.inward_service import _next_counter
 
@@ -25,6 +38,26 @@ log = structlog.get_logger(__name__)
 
 _PO_REQUIRED_COLUMNS = {"po_number", "ean", "ordered_qty"}
 _MAX_ALLOC_RETRIES = 5
+
+
+def _consolidate_lines(lines_data: list[dict]) -> tuple[list[dict], int]:
+    """Sum ordered_qty for duplicate EANs into a single line (OUT-3).
+
+    OutwardPOLine has a unique (outward_po_id, ean) constraint, so an
+    unconsolidated CSV with a repeated EAN would otherwise fail at commit.
+    Returns (consolidated_lines, duplicate_row_count).
+    """
+    merged: dict[str, dict] = {}
+    duplicate_rows = 0
+    for ld in lines_data:
+        existing = merged.get(ld["ean"])
+        if existing is None:
+            merged[ld["ean"]] = dict(ld)
+        else:
+            existing["ordered_qty"] += ld["ordered_qty"]
+            existing["description"] = existing["description"] or ld["description"]
+            duplicate_rows += 1
+    return list(merged.values()), duplicate_rows
 
 
 # ── PO upload ─────────────────────────────────────────────────────────────────
@@ -112,6 +145,8 @@ async def upload_po(
             status_code=400,
             detail=f"No rows found in CSV for po_number '{po_number}'",
         )
+
+    lines_data, _ = _consolidate_lines(lines_data)
 
     # 5. Create OutwardPO
     po = OutwardPO(
@@ -281,6 +316,7 @@ async def close_box(
     before_status = box.status.value
     box.status = OutwardBoxStatusEnum.closed
     box.closed_by = closed_by
+    box.closed_at = datetime.now(UTC)
 
     await write_audit_log(
         db,
@@ -336,6 +372,27 @@ async def add_scan(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot add scans to a closed box",
         )
+
+    # 1b. One active box per packer (OUT-10). Advisory lock serialises concurrent
+    # scans by the same packer into different boxes; the DB also carries a partial
+    # unique index on (created_by) WHERE status='in_use' as the final backstop —
+    # without this check that constraint surfaces as a raw 500 instead of this
+    # PRD-mandated 400.
+    if box.status == OutwardBoxStatusEnum.open:
+        await db.execute(text("SELECT pg_advisory_xact_lock(:uid)"), {"uid": created_by})
+        other_active = await db.execute(
+            select(OutwardBox.id).where(
+                OutwardBox.organisation_id == organisation_id,
+                OutwardBox.created_by == created_by,
+                OutwardBox.status == OutwardBoxStatusEnum.in_use,
+                OutwardBox.id != box.id,
+            )
+        )
+        if other_active.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Mark the current box full before starting another box.",
+            )
 
     # 2. Check if ANY open outward PO line has this EAN for this org/customer
     any_line_result = await db.execute(
@@ -444,6 +501,7 @@ async def add_scan(
     note: str | None = None
     if (ledger_result.scalar() or 0) <= 0:
         note = "Note: no recorded inward stock for this item."
+    scan.stock_flagged = note is not None
 
     await write_audit_log(
         db,
@@ -506,6 +564,8 @@ async def delete_scan(
 
     # Soft-delete
     scan.scan_result = OutwardScanResultEnum.deleted
+    scan.deleted_at = datetime.now(UTC)
+    scan.deleted_by = deleted_by
 
     # Decrement po_line packed_qty (if allocated)
     if scan.outward_po_line_id is not None:
@@ -540,3 +600,392 @@ async def delete_scan(
     await db.commit()
     await db.refresh(scan)
     return scan
+
+
+# ── PO: list open ─────────────────────────────────────────────────────────────
+
+async def list_open_pos(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    customer_id: int | None = None,
+    search: str | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> OpenPOListResponse:
+    from app.models.customer import Customer
+
+    base_where = [OutwardPO.organisation_id == org_id]
+    if customer_id is not None:
+        base_where.append(OutwardPO.customer_id == customer_id)
+    if search:
+        base_where.append(OutwardPO.po_number.ilike(f"%{search}%"))
+    if from_date is not None:
+        start = datetime(from_date.year, from_date.month, from_date.day, tzinfo=UTC)
+        base_where.append(OutwardPO.uploaded_at >= start)
+    if to_date is not None:
+        end = datetime(to_date.year, to_date.month, to_date.day, tzinfo=UTC) + timedelta(days=1)
+        base_where.append(OutwardPO.uploaded_at < end)
+
+    total = await db.scalar(
+        select(sql_func.count()).select_from(OutwardPO).where(*base_where)
+    ) or 0
+
+    result = await db.execute(
+        select(
+            OutwardPO,
+            Customer.name.label("customer_name"),
+            sql_func.coalesce(sql_func.sum(OutwardPOLine.ordered_qty), 0).label("total_ordered"),
+            sql_func.coalesce(sql_func.sum(OutwardPOLine.packed_qty), 0).label("total_packed"),
+        )
+        .join(Customer, OutwardPO.customer_id == Customer.id)
+        .outerjoin(OutwardPOLine, OutwardPOLine.outward_po_id == OutwardPO.id)
+        .where(*base_where)
+        .group_by(OutwardPO.id, Customer.name)
+        .order_by(OutwardPO.uploaded_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = result.all()
+
+    items = []
+    for po, customer_name, total_ordered, total_packed in rows:
+        progress_pct = (total_packed / total_ordered * 100.0) if total_ordered > 0 else 0.0
+        items.append(OpenPOSummary(
+            id=po.id,
+            po_number=po.po_number,
+            customer_id=po.customer_id,
+            customer_name=customer_name,
+            status=po.status,
+            uploaded_at=po.uploaded_at,
+            total_ordered=total_ordered,
+            total_packed=total_packed,
+            progress_pct=round(progress_pct, 1),
+        ))
+    return OpenPOListResponse(items=items, total=total)
+
+
+# ── PO: toggle status ─────────────────────────────────────────────────────────
+
+async def toggle_po_status(
+    db: AsyncSession,
+    *,
+    po_id: int,
+    org_id: int,
+    new_status: OutwardPoStatusEnum,
+    user_id: int,
+    ip_address: str | None,
+) -> OutwardPO:
+    result = await db.execute(
+        select(OutwardPO).where(
+            OutwardPO.id == po_id,
+            OutwardPO.organisation_id == org_id,
+        )
+    )
+    po = result.scalar_one_or_none()
+    if po is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PO not found")
+    if po.status == new_status:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"PO is already {new_status.value}.",
+        )
+
+    old_status = po.status
+    po.status = new_status
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.outward,
+        action="po_status_changed",
+        resource_type="outward_po",
+        resource_id=po.id,
+        user_id=user_id,
+        organisation_id=org_id,
+        before_data={"status": old_status.value},
+        after_data={"status": new_status.value},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+
+    result = await db.execute(
+        select(OutwardPO).options(selectinload(OutwardPO.lines)).where(OutwardPO.id == po.id)
+    )
+    return result.scalar_one()
+
+
+# ── PO: preview (stateless parse) ────────────────────────────────────────────
+
+async def preview_po(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    customer_id: int,
+    csv_bytes: bytes,
+) -> OutwardPOPreviewResponse:
+    from app.models.customer import Customer
+
+    problems: list[str] = []
+
+    # Validate customer belongs to org
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organisation_id == org_id,
+        )
+    )
+    if cust_result.scalar_one_or_none() is None:
+        problems.append("Customer not found in this organisation.")
+        return OutwardPOPreviewResponse(
+            first_10_rows=[], total_rows=0, problems=problems, is_valid=False
+        )
+
+    # Parse CSV
+    try:
+        text_io = io.StringIO(csv_bytes.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        problems.append("File encoding error — upload a UTF-8 CSV.")
+        return OutwardPOPreviewResponse(
+            first_10_rows=[], total_rows=0, problems=problems, is_valid=False
+        )
+
+    reader = csv.DictReader(text_io)
+    if reader.fieldnames is None:
+        problems.append("CSV file is empty or has no header row.")
+        return OutwardPOPreviewResponse(
+            first_10_rows=[], total_rows=0, problems=problems, is_valid=False
+        )
+
+    actual_columns = {c.strip().lower() for c in reader.fieldnames}
+    missing = sorted(_PO_REQUIRED_COLUMNS - actual_columns)
+    if missing:
+        problems.append(f"Upload failed: missing required column(s): {', '.join(missing)}")
+        return OutwardPOPreviewResponse(
+            first_10_rows=[], total_rows=0, problems=problems, is_valid=False
+        )
+
+    rows = list(reader)
+    if not rows:
+        problems.append("CSV file contains no data rows.")
+        return OutwardPOPreviewResponse(
+            first_10_rows=[], total_rows=0, problems=problems, is_valid=False
+        )
+
+    po_numbers = {row.get("po_number", "").strip() for row in rows}
+    if len(po_numbers) > 1:
+        problems.append(
+            f"CSV contains {len(po_numbers)} different PO numbers. "
+            "Each upload must contain rows for a single PO."
+        )
+
+    preview_rows: list[OutwardPOPreviewRow] = []
+    for i, row in enumerate(rows[:10]):
+        try:
+            qty = int(row.get("ordered_qty", ""))
+        except (ValueError, TypeError):
+            problems.append(f"Row {i + 1}: ordered_qty is not a valid integer.")
+            qty = 0
+        preview_rows.append(OutwardPOPreviewRow(
+            po_number=row.get("po_number", "").strip(),
+            ean=row.get("ean", "").strip(),
+            ordered_qty=qty,
+            description=(row.get("description") or "").strip() or None,
+        ))
+
+    # OUT-3/OUT-2: warn (never block) when duplicate EANs will be consolidated
+    ean_counts: dict[str, int] = {}
+    for row in rows:
+        ean = row.get("ean", "").strip()
+        if ean:
+            ean_counts[ean] = ean_counts.get(ean, 0) + 1
+    duplicate_eans = {ean: n for ean, n in ean_counts.items() if n > 1}
+    consolidation_notice = (
+        f"{sum(duplicate_eans.values())} row(s) across {len(duplicate_eans)} duplicate EAN(s) "
+        "will be consolidated into a single line each, with quantities summed."
+        if duplicate_eans
+        else None
+    )
+
+    return OutwardPOPreviewResponse(
+        first_10_rows=preview_rows,
+        total_rows=len(rows),
+        problems=problems,
+        is_valid=len(problems) == 0,
+        consolidation_notice=consolidation_notice,
+    )
+
+
+# ── Labels: generate ──────────────────────────────────────────────────────────
+
+async def generate_labels(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    customer_id: int,
+    count: int,
+    created_by: int,
+    ip_address: str | None,
+) -> LabelGenerateResponse:
+    from app.models.customer import Customer
+
+    cust_result = await db.execute(
+        select(Customer).where(
+            Customer.id == customer_id,
+            Customer.organisation_id == org_id,
+        )
+    )
+    customer = cust_result.scalar_one_or_none()
+    if customer is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found")
+
+    box_ids: list[str] = []
+    for _ in range(count):
+        n = await _next_counter(
+            db,
+            counter_type=CounterTypeEnum.outward_box,
+            organisation_id=org_id,
+            customer_code=customer.code,
+            date_key="",
+        )
+        box_id = f"OB-{customer.code}-{n:06d}"
+        box = OutwardBox(
+            box_id=box_id,
+            organisation_id=org_id,
+            customer_id=customer_id,
+            status=OutwardBoxStatusEnum.open,
+            print_count=1,
+            created_by=created_by,
+        )
+        db.add(box)
+        await db.flush()
+        box_ids.append(box_id)
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.outward,
+        action="labels_generated",
+        resource_type="outward_box",
+        resource_id=None,
+        user_id=created_by,
+        organisation_id=org_id,
+        after_data={"customer_id": customer_id, "count": count, "box_ids": box_ids},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    return LabelGenerateResponse(box_ids=box_ids)
+
+
+# ── Labels: history ───────────────────────────────────────────────────────────
+
+async def get_label_history(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    user_id: int,
+    customer_id: int | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> LabelHistoryResponse:
+    from app.models.customer import Customer
+
+    base_where = [
+        OutwardBox.organisation_id == org_id,
+        OutwardBox.created_by == user_id,
+    ]
+    if customer_id is not None:
+        base_where.append(OutwardBox.customer_id == customer_id)
+
+    total = await db.scalar(
+        select(sql_func.count()).select_from(OutwardBox).where(*base_where)
+    ) or 0
+
+    result = await db.execute(
+        select(OutwardBox, Customer.name.label("customer_name"))
+        .join(Customer, OutwardBox.customer_id == Customer.id)
+        .where(*base_where)
+        .order_by(OutwardBox.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = result.all()
+
+    return LabelHistoryResponse(
+        items=[
+            LabelHistoryItem(
+                box_id=box.box_id,
+                customer_name=customer_name,
+                status=box.status,
+                print_count=box.print_count,
+                created_at=box.created_at,
+                closed_at=box.closed_at,
+            )
+            for box, customer_name in rows
+        ],
+        total=total,
+    )
+
+
+# ── Boxes: packing history ────────────────────────────────────────────────────
+
+async def list_packing_history(
+    db: AsyncSession,
+    *,
+    org_id: int,
+    user_id: int,
+    days: int = 30,
+    page: int = 1,
+    page_size: int = 20,
+) -> OutwardBoxListResponse:
+    from app.models.customer import Customer
+
+    since = datetime.now(UTC) - timedelta(days=days)
+    base_where = [
+        OutwardBox.organisation_id == org_id,
+        OutwardBox.created_by == user_id,
+        OutwardBox.created_at >= since,
+    ]
+
+    total = await db.scalar(
+        select(sql_func.count()).select_from(OutwardBox).where(*base_where)
+    ) or 0
+
+    # Subquery: count accepted scans per box
+    scan_count_sq = (
+        select(sql_func.count())
+        .select_from(OutwardScan)
+        .where(
+            OutwardScan.outward_box_id == OutwardBox.id,
+            OutwardScan.scan_result == OutwardScanResultEnum.accepted,
+        )
+        .correlate(OutwardBox)
+        .scalar_subquery()
+    )
+
+    result = await db.execute(
+        select(OutwardBox, Customer.name.label("customer_name"), scan_count_sq.label("scan_count"))
+        .join(Customer, OutwardBox.customer_id == Customer.id)
+        .where(*base_where)
+        .order_by(OutwardBox.created_at.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    rows = result.all()
+
+    return OutwardBoxListResponse(
+        items=[
+            OutwardBoxSummary(
+                box_id=box.box_id,
+                customer_name=customer_name,
+                status=box.status,
+                scan_count=scan_count,
+                closed_at=box.closed_at,
+                created_at=box.created_at,
+            )
+            for box, customer_name, scan_count in rows
+        ],
+        total=total,
+    )

@@ -1,12 +1,11 @@
-import io
 import csv as _csv
+import io
 
 import pytest_asyncio
 from httpx import AsyncClient
 
-from app.models.enums import CustomerStatusEnum
 from app.models.customer import Customer
-
+from app.models.enums import CustomerStatusEnum
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

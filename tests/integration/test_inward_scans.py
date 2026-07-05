@@ -1,4 +1,3 @@
-import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
@@ -69,8 +68,8 @@ async def scanning_box(db, org, customer) -> InwardBox:
 
 # ── Add scan: success ─────────────────────────────────────────────────────────
 
-async def test_add_scan_success(client, packer_user, org, scanning_box, po_with_line):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_add_scan_success(client, inward_operator_user, org, scanning_box, po_with_line):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "1234567890123"},
@@ -82,9 +81,9 @@ async def test_add_scan_success(client, packer_user, org, scanning_box, po_with_
     assert body["is_deleted"] is False
 
 
-async def test_add_scan_increments_scanned_qty(client, packer_user, org, scanning_box,
+async def test_add_scan_increments_scanned_qty(client, inward_operator_user, org, scanning_box,
                                                 po_with_line, db):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "1234567890123"},
@@ -95,10 +94,10 @@ async def test_add_scan_increments_scanned_qty(client, packer_user, org, scannin
 
 
 async def test_add_scan_increments_packed_qty_on_po_line(
-    client, packer_user, org, scanning_box, po_with_line, db
+    client, inward_operator_user, org, scanning_box, po_with_line, db
 ):
     _, line = po_with_line
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "1234567890123"},
@@ -109,10 +108,9 @@ async def test_add_scan_increments_packed_qty_on_po_line(
 
 
 async def test_add_scan_fifo_allocates_oldest_po_first(
-    client, packer_user, org, scanning_box, db, customer
+    client, inward_operator_user, org, scanning_box, db, customer
 ):
     # Two POs with the same EAN; older one should be allocated first
-    import asyncio
     po_old = InwardPO(
         organisation_id=org.id, customer_id=customer.id,
         po_number="PO-OLD", status=InwardReferenceStatusEnum.open,
@@ -139,7 +137,7 @@ async def test_add_scan_fifo_allocates_oldest_po_first(
     db.add(line_new)
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "9999999999999"},
@@ -154,8 +152,8 @@ async def test_add_scan_fifo_allocates_oldest_po_first(
 
 # ── Add scan: errors ──────────────────────────────────────────────────────────
 
-async def test_add_scan_ean_not_found(client, packer_user, org, scanning_box):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_add_scan_ean_not_found(client, inward_operator_user, org, scanning_box):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "0000000000000"},
@@ -165,7 +163,9 @@ async def test_add_scan_ean_not_found(client, packer_user, org, scanning_box):
     assert resp.json()["detail"] == "EAN not found in open POs"
 
 
-async def test_add_scan_all_lines_full(client, packer_user, org, scanning_box, db, customer):
+async def test_add_scan_all_lines_full(
+    client, inward_operator_user, org, scanning_box, db, customer
+):
     po = InwardPO(
         organisation_id=org.id, customer_id=customer.id,
         po_number="PO-FULL", status=InwardReferenceStatusEnum.open,
@@ -179,7 +179,7 @@ async def test_add_scan_all_lines_full(client, packer_user, org, scanning_box, d
     db.add(line)
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "8888888888888"},
@@ -189,7 +189,8 @@ async def test_add_scan_all_lines_full(client, packer_user, org, scanning_box, d
     assert resp.json()["detail"] == "Quantity complete for all open POs"
 
 
-async def test_add_scan_no_inward_stock_note(client, packer_user, org, scanning_box, db, customer):
+async def test_add_scan_no_inward_stock_note(client, inward_operator_user, org, scanning_box,
+                                              db, customer):
     # EAN exists in PO but no prior inward_submission ledger entries
     po = InwardPO(
         organisation_id=org.id, customer_id=customer.id,
@@ -203,7 +204,7 @@ async def test_add_scan_no_inward_stock_note(client, packer_user, org, scanning_
     ))
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "7777777777777"},
@@ -215,8 +216,9 @@ async def test_add_scan_no_inward_stock_note(client, packer_user, org, scanning_
 
 # ── Delete scan ───────────────────────────────────────────────────────────────
 
-async def test_delete_scan_success(client, packer_user, org, scanning_box, po_with_line, db):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_delete_scan_success(client, inward_operator_user, org, scanning_box, po_with_line,
+                                    db):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     # Create a scan first
     create_resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
@@ -239,10 +241,10 @@ async def test_delete_scan_success(client, packer_user, org, scanning_box, po_wi
 
 
 async def test_delete_scan_decrements_packed_qty(
-    client, packer_user, org, scanning_box, po_with_line, db
+    client, inward_operator_user, org, scanning_box, po_with_line, db
 ):
     _, line = po_with_line
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "1234567890123"},
@@ -258,9 +260,9 @@ async def test_delete_scan_decrements_packed_qty(
     assert line.packed_qty == 0
 
 
-async def test_delete_already_deleted_scan(client, packer_user, org, scanning_box,
+async def test_delete_already_deleted_scan(client, inward_operator_user, org, scanning_box,
                                             po_with_line, db):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{scanning_box.box_id}/scans",
         json={"ean": "1234567890123"},

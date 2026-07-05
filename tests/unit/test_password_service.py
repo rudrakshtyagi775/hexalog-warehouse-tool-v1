@@ -1,4 +1,3 @@
-import pytest
 
 from app.services.password_service import DUMMY_HASH, hash_password, verify_password
 

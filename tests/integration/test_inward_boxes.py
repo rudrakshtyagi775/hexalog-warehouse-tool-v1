@@ -62,8 +62,8 @@ async def closed_box(db, org, customer) -> InwardBox:
 
 # ── Create box ────────────────────────────────────────────────────────────────
 
-async def test_create_box_success(client, packer_user, org, customer):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_create_box_success(client, inward_operator_user, org, customer):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         "/api/inward/boxes",
         json={"customer_id": customer.id},
@@ -79,7 +79,7 @@ async def test_create_box_success(client, packer_user, org, customer):
 
 
 async def test_create_box_generates_sequential_ids(client, packer_user, admin_user, org, customer):
-    # Admin can create two boxes without the packer guard
+    # Admin can create two boxes without the single-active-box guard
     admin_token = await _login(client, "admin@test.com", "AdminPass1!", org.id)
     r1 = await client.post(
         "/api/inward/boxes",
@@ -96,13 +96,14 @@ async def test_create_box_generates_sequential_ids(client, packer_user, admin_us
     assert n2 == n1 + 1
 
 
-async def test_packer_cannot_create_second_active_box(client, packer_user, org, customer, open_box,
-                                                       db):
-    # Assign open_box to this packer so the guard fires
-    open_box.created_by = packer_user.id
+async def test_non_admin_cannot_create_second_active_box(
+    client, inward_operator_user, org, customer, open_box, db
+):
+    # Assign open_box to this operator so the guard fires
+    open_box.created_by = inward_operator_user.id
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         "/api/inward/boxes",
         json={"customer_id": customer.id},
@@ -164,12 +165,12 @@ async def test_get_box_not_found(client, packer_user, org):
 
 # ── Close box ─────────────────────────────────────────────────────────────────
 
-async def test_close_box_success(client, packer_user, org, db, open_box):
+async def test_close_box_success(client, inward_operator_user, org, db, open_box):
     # Set scanned_qty to match physical_qty we'll provide
     open_box.scanned_qty = 5
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{open_box.box_id}/close",
         json={"physical_qty": 5},
@@ -179,8 +180,8 @@ async def test_close_box_success(client, packer_user, org, db, open_box):
     assert resp.json()["status"] == "pending_verification"
 
 
-async def test_close_box_qty_mismatch(client, packer_user, org, open_box):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_close_box_qty_mismatch(client, inward_operator_user, org, open_box):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{open_box.box_id}/close",
         json={"physical_qty": 99},
@@ -192,8 +193,8 @@ async def test_close_box_qty_mismatch(client, packer_user, org, open_box):
     )
 
 
-async def test_close_box_wrong_status(client, packer_user, org, closed_box):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_close_box_wrong_status(client, inward_operator_user, org, closed_box):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{closed_box.box_id}/close",
         json={"physical_qty": closed_box.physical_qty},
@@ -205,9 +206,9 @@ async def test_close_box_wrong_status(client, packer_user, org, closed_box):
 
 # ── Submit box ────────────────────────────────────────────────────────────────
 
-async def test_submit_box_success(client, packer_user, org, closed_box):
+async def test_submit_box_success(client, inward_operator_user, org, closed_box):
     """pending_verification → completed; inscan_number is set; is_read_only becomes True."""
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{closed_box.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},
@@ -220,10 +221,10 @@ async def test_submit_box_success(client, packer_user, org, closed_box):
     assert body["is_read_only"] is True
 
 
-async def test_submit_box_inscan_number_format(client, packer_user, org, closed_box):
+async def test_submit_box_inscan_number_format(client, inward_operator_user, org, closed_box):
     """Inscan number matches INS-<CUSTCODE>-<YYYYMMDD>-<XXXX>."""
     import re
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{closed_box.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},
@@ -233,9 +234,9 @@ async def test_submit_box_inscan_number_format(client, packer_user, org, closed_
     assert re.match(r"^INS-[A-Z]+-\d{8}-\d{4}$", inscan), f"Bad format: {inscan}"
 
 
-async def test_submit_box_wrong_status_scanning(client, packer_user, org, open_box):
+async def test_submit_box_wrong_status_scanning(client, inward_operator_user, org, open_box):
     """Box in 'scanning' status cannot be submitted — must close first."""
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{open_box.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},
@@ -244,7 +245,7 @@ async def test_submit_box_wrong_status_scanning(client, packer_user, org, open_b
     assert "pending_verification" in resp.json()["detail"].lower()
 
 
-async def test_submit_box_wrong_status_completed(client, packer_user, org, db, customer):
+async def test_submit_box_wrong_status_completed(client, inward_operator_user, org, db, customer):
     """Already-completed box cannot be submitted again."""
     box = InwardBox(
         box_id="B-TST-000001",
@@ -257,7 +258,7 @@ async def test_submit_box_wrong_status_completed(client, packer_user, org, db, c
     db.add(box)
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{box.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},
@@ -266,8 +267,8 @@ async def test_submit_box_wrong_status_completed(client, packer_user, org, db, c
     assert "pending_verification" in resp.json()["detail"].lower()
 
 
-async def test_submit_box_not_found(client, packer_user, org):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_submit_box_not_found(client, inward_operator_user, org):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         "/api/inward/boxes/B-XXX-999999/submit",
         headers={"Authorization": f"Bearer {token}"},
@@ -280,7 +281,7 @@ async def test_submit_box_requires_auth(client, closed_box):
     assert resp.status_code == 401
 
 
-async def test_submit_box_writes_ledger_entries(client, packer_user, org, db, customer):
+async def test_submit_box_writes_ledger_entries(client, inward_operator_user, org, db, customer):
     """One +1 InventoryLedgerEntry per active scan; deleted scans are skipped."""
     box = InwardBox(
         box_id="B-TST-000097",
@@ -317,7 +318,7 @@ async def test_submit_box_writes_ledger_entries(client, packer_user, org, db, cu
     db.add_all([scan_a, scan_b, scan_del])
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.post(
         f"/api/inward/boxes/{box.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},
