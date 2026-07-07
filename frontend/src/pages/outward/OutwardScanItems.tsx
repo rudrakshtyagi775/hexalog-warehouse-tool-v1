@@ -47,6 +47,13 @@ export function OutwardScanItemsPage() {
   const [lastNote, setLastNote] = useState<string | null>(null)
 
   const scanInputRef = useRef<HTMLInputElement>(null)
+  // Barcode scanners type a full EAN in a fast, uninterrupted burst with no
+  // reliable terminator we can require. AUTO_SUBMIT_QUIET_MS is how long the
+  // input must sit still after the last keystroke before we treat the burst
+  // as finished and submit — long enough to never split a real scan (which
+  // completes in well under this window), short enough to feel instant.
+  const AUTO_SUBMIT_QUIET_MS = 75
+  const autoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const addScan = useAddOutwardScan()
   const deleteScan = useDeleteOutwardScan()
   const { data: box, isLoading: boxLoading } = useOutwardBox(activeBoxId)
@@ -57,6 +64,19 @@ export function OutwardScanItemsPage() {
     }
   }, [box?.box_id, box?.is_read_only])
 
+  useEffect(() => {
+    return () => {
+      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current)
+    }
+  }, [])
+
+  const clearAutoSubmitTimer = () => {
+    if (autoSubmitTimerRef.current) {
+      clearTimeout(autoSubmitTimerRef.current)
+      autoSubmitTimerRef.current = null
+    }
+  }
+
   const handleBoxLoad = (e: React.FormEvent) => {
     e.preventDefault()
     const id = boxIdInput.trim()
@@ -66,9 +86,14 @@ export function OutwardScanItemsPage() {
     outwardBoxHistory.add(id)
   }
 
-  const handleScan = async () => {
-    if (addScan.isPending) return // one in-flight scan at a time; ignore extra Enter/Add triggers
-    const ean = eanInput.trim()
+  const handleScan = async (eanOverride?: string) => {
+    clearAutoSubmitTimer()
+    if (addScan.isPending) return // one in-flight scan at a time; ignore extra Enter/Add/auto triggers
+    // eanOverride is used by the auto-submit timer: it's scheduled from an
+    // onChange closure whose `eanInput` state hasn't caught up to the just-typed
+    // character yet, so the live DOM value is passed explicitly to avoid
+    // submitting a barcode that's one character short.
+    const ean = (eanOverride ?? eanInput).trim()
     if (!ean || !activeBoxId) return
     setScanError('')
     setLastNote(null)
@@ -93,10 +118,22 @@ export function OutwardScanItemsPage() {
     }
   }
 
+  const handleEanChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setEanInput(value)
+    clearAutoSubmitTimer()
+    if (value.trim()) {
+      // No terminator required: once the scanner's burst of characters goes
+      // quiet for AUTO_SUBMIT_QUIET_MS, treat the barcode as complete. `value`
+      // (the live DOM value) is passed explicitly — see handleScan's comment.
+      autoSubmitTimerRef.current = setTimeout(() => void handleScan(value), AUTO_SUBMIT_QUIET_MS)
+    }
+  }
+
   const handleEanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault()
-      void handleScan()
+      void handleScan() // manual fallback; clears the pending auto-submit timer itself
     }
   }
 
@@ -183,7 +220,7 @@ export function OutwardScanItemsPage() {
                       ref={scanInputRef}
                       placeholder="Scan or type EAN barcode…"
                       value={eanInput}
-                      onChange={(e) => setEanInput(e.target.value)}
+                      onChange={handleEanChange}
                       onKeyDown={handleEanKeyDown}
                       disabled={addScan.isPending}
                       className="font-mono text-base"
@@ -197,7 +234,7 @@ export function OutwardScanItemsPage() {
                     </Button>
                   </div>
                   <p className="mt-2 text-xs text-gray-400">
-                    Press Enter after scanning. Barcode scanners work automatically.
+                    Just scan — it submits automatically. No need to press Enter or click Add.
                   </p>
                 </Card>
               )}
