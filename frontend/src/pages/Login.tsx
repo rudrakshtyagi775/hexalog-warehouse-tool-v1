@@ -3,13 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Warehouse } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { extractErrorMessage } from '@/api/client'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
 import { Alert } from '@/components/ui/Alert'
+import { HexalogLogo } from '@/components/brand/HexalogLogo'
 
 const schema = z.object({
   email: z.string().email('Enter a valid email address'),
@@ -47,9 +47,7 @@ export function LoginPage() {
       <div className="w-full max-w-sm">
         {/* Brand */}
         <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <Warehouse className="h-7 w-7 text-white" />
-          </div>
+          <HexalogLogo width={40} height={44} />
           <div>
             <p className="text-xl font-bold text-gray-900 leading-tight">Hexalog</p>
             <p className="text-sm text-gray-500">Warehouse Tool</p>

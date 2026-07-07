@@ -98,6 +98,38 @@ async def test_download_labels_pdf_known_box_renders_or_reports_unavailable(
         assert len(resp.content) > 0
 
 
+async def test_download_labels_pdf_audits_every_fetch(client, packer_user, org, customer, db):
+    """PRD §10 Audit Trail: 'every print/reprint' must be audited, not just the
+    dedicated reprint endpoint. Only asserts when rendering actually succeeds —
+    on a host without WeasyPrint's native libs the request 503s before any
+    audit write, which is the correct, unchanged behavior."""
+    from sqlalchemy import select
+
+    from app.models.audit_log import AuditLog
+
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    gen_resp = await client.post(
+        "/api/outward/labels/generate",
+        json={"customer_id": customer.id, "count": 1},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    box_id = gen_resp.json()["box_ids"][0]
+
+    resp = await client.get(
+        "/api/outward/labels/pdf",
+        params={"box_ids": [box_id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if resp.status_code != 200:
+        return  # WeasyPrint unavailable on this host — nothing to assert
+
+    audit_result = await db.execute(
+        select(AuditLog).where(AuditLog.action == "label_printed")
+    )
+    audit_row = audit_result.scalar_one()
+    assert audit_row.after_data["box_ids"] == [box_id]
+
+
 # ── labels/history ───────────────────────────────────────────────────────────
 
 async def test_label_history_lists_own_generated_boxes(client, packer_user, org, customer):

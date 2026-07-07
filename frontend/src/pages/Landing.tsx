@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
-import { Warehouse, Package, ScanLine, BarChart2 } from 'lucide-react'
+import { Package, ScanLine, BarChart2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { HexalogLogo } from '@/components/brand/HexalogLogo'
 
 const features = [
   { icon: Package,   label: 'Inward Management',  desc: 'Track POs, create boxes, scan items with full audit trail.' },
@@ -12,8 +13,8 @@ export function LandingPage() {
   return (
     <div className="min-h-screen bg-slate-900 flex flex-col">
       <div className="flex-1 flex flex-col items-center justify-center px-4 text-center">
-        <div className="p-3 bg-blue-600 rounded-xl mb-6">
-          <Warehouse className="h-12 w-12 text-white" />
+        <div className="mb-6">
+          <HexalogLogo width={64} height={71} />
         </div>
         <h1 className="text-4xl font-bold text-white mb-3">Hexalog Warehouse Tool</h1>
         <p className="text-slate-400 text-lg mb-10 max-w-lg">

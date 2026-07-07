@@ -17,7 +17,6 @@ from app.models.enums import (
     InwardCodeTypeEnum,
     InwardReferenceStatusEnum,
     LedgerSourceTypeEnum,
-    UserRoleEnum,
 )
 from app.models.inward import (
     InventoryLedgerEntry,
@@ -387,32 +386,28 @@ async def create_box(
     customer_id: int,
     organisation_id: int,
     created_by: int,
-    user_roles: list[UserRoleEnum],
     ip_address: str | None,
     inward_reference_id: int | None = None,
     box_number: str | None = None,
 ) -> InwardBox:
-    # 1. Single-active-box guard (admin bypasses)
-    is_non_admin = UserRoleEnum.admin not in user_roles
-    if is_non_admin:
-        # Advisory lock serialises concurrent create_box calls for the same packer,
-        # eliminating the SELECT-then-INSERT race where two requests both see no
-        # active box and both proceed to create one.
-        await db.execute(
-            text("SELECT pg_advisory_xact_lock(:uid)"), {"uid": created_by}
+    # 1. Single-active-box guard. Advisory lock serialises concurrent create_box calls for
+    # the same operator, eliminating the SELECT-then-INSERT race where two requests both
+    # see no active box and both proceed to create one.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:uid)"), {"uid": created_by}
+    )
+    existing = await db.execute(
+        select(InwardBox).where(
+            InwardBox.organisation_id == organisation_id,
+            InwardBox.created_by == created_by,
+            InwardBox.status == InwardBoxStatusEnum.scanning,
         )
-        existing = await db.execute(
-            select(InwardBox).where(
-                InwardBox.organisation_id == organisation_id,
-                InwardBox.created_by == created_by,
-                InwardBox.status == InwardBoxStatusEnum.scanning,
-            )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mark the current box full before starting another box.",
         )
-        if existing.scalar_one_or_none() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Mark the current box full before starting another box.",
-            )
 
     # 2. Load customer to get the code for Box ID generation
     from app.models.customer import Customer
@@ -935,6 +930,7 @@ async def list_boxes(
     db: AsyncSession,
     *,
     org_id: int,
+    created_by: int,
     status_filter: InwardBoxStatusEnum | None = None,
     customer_id: int | None = None,
     from_date: date | None = None,
@@ -942,10 +938,13 @@ async def list_boxes(
     page: int = 1,
     page_size: int = 20,
 ) -> InwardBoxListResponse:
+    """List inward boxes. Always scoped to the requesting operator's own submissions (PRD:
+    inward operator may view only own inward history)."""
     from app.models.customer import Customer
 
     base_where = [
         InwardBox.organisation_id == org_id,
+        InwardBox.created_by == created_by,
         InwardBox.is_deleted == False,  # noqa: E712
     ]
     if status_filter is not None:

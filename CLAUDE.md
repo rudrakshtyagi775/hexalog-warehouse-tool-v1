@@ -277,13 +277,32 @@ These strings are fixed. UI and API must return them exactly — ops training ma
 
 Three roles: `admin`, `inward_operator`, `packer`. One user can hold multiple roles per org.
 
+**Admin is NOT a superuser.** Every dependency lists its allowed roles explicitly — there is no implicit passthrough for any role, including admin. Admin can only call an endpoint if `UserRoleEnum.admin` is explicitly in that endpoint's allowed-roles list.
+
 ```python
 require_admin              # admin only
-require_inward_operator    # inward_operator OR admin
-require_packer             # packer OR admin
+require_inward_operator    # inward_operator only
+require_packer              # packer only
+require_admin_or_packer     # admin or packer (e.g. viewing outward POs)
 ```
 
-All role checks are server-side in `app/dependencies/auth.py`. Admins implicitly pass every role check.
+All role checks are server-side in `app/dependencies/auth.py`, via `require_roles(*allowed_roles)`. See the PRD permission matrix below for exactly which roles may call which endpoints.
+
+### PRD Permission Matrix
+
+| Capability | Admin | Inward Operator | Packer |
+|---|:---:|:---:|:---:|
+| Upload/Open/Close Outward POs | ✅ | ❌ | ❌ |
+| View Outward POs | ✅ (all statuses) | ❌ | ✅ (open only) |
+| Create/Print outward box labels, pack items, close outward box | ❌ | ❌ | ✅ |
+| Delete accepted outward scans | ❌ | ❌ | ✅ (own active box only) |
+| Inward workflow (customer selection, PO/invoice entry, scanning, verification, submission) | ❌ | ✅ | ❌ |
+| View inward history | ❌ | ✅ (own only) | ❌ |
+| View packing history | ✅ (all) | ❌ | ✅ (own only) |
+| Reports (view/download) | ✅ | ❌ | ❌ |
+| Manage users / customers / organisations | ✅ | ❌ | ❌ |
+
+Read-only customer lookup (`GET /api/customers`, `GET /api/customers/{id}`) is available to any authenticated role — needed for customer-selection dropdowns in both workflows. Only create/update are admin-only.
 
 ---
 

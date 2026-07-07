@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { outwardApi } from '@/api/outward'
-import type { OutwardBoxCreate, OutwardScanCreate } from '@/types'
+import type { LabelGenerateRequest, OutwardBoxCreate, OutwardScanCreate } from '@/types'
 
 export function useOutwardBox(boxId: string | null) {
   return useQuery({
@@ -48,5 +48,23 @@ export function useDeleteOutwardScan() {
 export function useUploadOutwardPO() {
   return useMutation({
     mutationFn: (formData: FormData) => outwardApi.uploadPO(formData),
+  })
+}
+
+export function usePreviewOutwardPO() {
+  return useMutation({
+    mutationFn: (formData: FormData) => outwardApi.previewPO(formData),
+  })
+}
+
+export function useGenerateLabels() {
+  return useMutation({
+    mutationFn: (data: LabelGenerateRequest) => outwardApi.generateLabels(data),
+  })
+}
+
+export function useReprintLabel() {
+  return useMutation({
+    mutationFn: (boxId: string) => outwardApi.reprintLabel(boxId),
   })
 }

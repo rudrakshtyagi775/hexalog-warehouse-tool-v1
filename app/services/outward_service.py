@@ -40,6 +40,43 @@ _PO_REQUIRED_COLUMNS = {"po_number", "ean", "ordered_qty"}
 _MAX_ALLOC_RETRIES = 5
 
 
+def _read_upload_rows(filename: str, file_bytes: bytes) -> tuple[list[str] | None, list[dict]]:
+    """Parse an uploaded PO file (CSV or XLSX, per OUT-1) into (fieldnames, rows),
+    mirroring csv.DictReader's shape so downstream validation stays format-agnostic.
+
+    fieldnames is None when the file has no header row (mirrors DictReader).
+    """
+    if filename.lower().endswith((".xlsx", ".xls")):
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        rows_iter = ws.iter_rows(values_only=True)
+        header_row = next(rows_iter, None)
+        if header_row is None or all(cell is None for cell in header_row):
+            return None, []
+
+        fieldnames = [str(cell).strip() if cell is not None else "" for cell in header_row]
+        rows: list[dict] = []
+        for raw_row in rows_iter:
+            if all(cell is None for cell in raw_row):
+                continue
+            row: dict = {}
+            for key, value in zip(fieldnames, raw_row):
+                if value is None:
+                    row[key] = ""
+                elif isinstance(value, float) and value.is_integer():
+                    row[key] = str(int(value))  # avoid "10.0" for whole-number cells
+                else:
+                    row[key] = str(value)
+            rows.append(row)
+        return fieldnames, rows
+
+    text_io = io.StringIO(file_bytes.decode("utf-8-sig"))
+    reader = csv.DictReader(text_io)
+    return reader.fieldnames, list(reader)
+
+
 def _consolidate_lines(lines_data: list[dict]) -> tuple[list[dict], int]:
     """Sum ordered_qty for duplicate EANs into a single line (OUT-3).
 
@@ -70,18 +107,18 @@ async def upload_po(
     uploaded_by: int,
     ip_address: str | None,
     po_number: str,
+    filename: str = "po.csv",
     csv_bytes: bytes,
 ) -> OutwardPO:
-    """Parse CSV, validate columns, detect duplicates, create OutwardPO + lines atomically."""
+    """Parse CSV/XLSX (OUT-1), validate columns, detect duplicates, create OutwardPO + lines."""
     from app.models.customer import Customer
 
-    # 1. Parse CSV
-    text_io = io.StringIO(csv_bytes.decode("utf-8-sig"))
-    reader = csv.DictReader(text_io)
-    if reader.fieldnames is None:
+    # 1. Parse the uploaded file (CSV or XLSX)
+    fieldnames, rows = _read_upload_rows(filename, csv_bytes)
+    if fieldnames is None:
         raise HTTPException(status_code=400, detail="CSV file is empty or has no header row")
 
-    actual_columns = {c.strip().lower() for c in reader.fieldnames}
+    actual_columns = {c.strip().lower() for c in fieldnames}
     missing = sorted(_PO_REQUIRED_COLUMNS - actual_columns)
     if missing:
         raise HTTPException(
@@ -89,7 +126,6 @@ async def upload_po(
             detail=f"Upload failed: missing required column(s): {', '.join(missing)}",
         )
 
-    rows = list(reader)
     if not rows:
         raise HTTPException(status_code=400, detail="CSV file contains no data rows")
 
@@ -344,6 +380,47 @@ async def close_box(
 
 # ── Scan: add ─────────────────────────────────────────────────────────────────
 
+async def _reject_scan(
+    db: AsyncSession,
+    *,
+    organisation_id: int,
+    box: OutwardBox,
+    ean: str,
+    created_by: int,
+    ip_address: str | None,
+    reason: str,
+) -> None:
+    """Persist a rejected scan attempt and audit it (OUT-12/R-3), then raise the
+    PRD-mandated 400 with the exact reason text. The HTTP contract callers see is
+    unchanged — only the rejection is now recorded instead of vanishing."""
+    rejected_scan = OutwardScan(
+        organisation_id=organisation_id,
+        outward_box_id=box.id,
+        outward_po_line_id=None,
+        ean=ean,
+        scan_result=OutwardScanResultEnum.rejected,
+        reject_reason=reason,
+        created_by=created_by,
+    )
+    db.add(rejected_scan)
+    await db.flush()
+
+    await write_audit_log(
+        db,
+        module=AuditModuleEnum.outward,
+        action="outward_scan_rejected",
+        resource_type="outward_scan",
+        resource_id=rejected_scan.id,
+        user_id=created_by,
+        organisation_id=organisation_id,
+        after_data={"box_id": box.box_id, "ean": ean, "reject_reason": reason},
+        ip_address=ip_address,
+    )
+
+    await db.commit()
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+
 async def add_scan(
     db: AsyncSession,
     *,
@@ -407,9 +484,14 @@ async def add_scan(
         .limit(1)
     )
     if any_line_result.scalar_one_or_none() is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="EAN not found in open outward POs",
+        await _reject_scan(
+            db,
+            organisation_id=organisation_id,
+            box=box,
+            ean=ean,
+            created_by=created_by,
+            ip_address=ip_address,
+            reason="EAN not found in open outward POs",
         )
 
     # 3. FIFO allocation with conditional UPDATE retry loop
@@ -431,9 +513,14 @@ async def add_scan(
         )
         candidate = candidate_result.scalar_one_or_none()
         if candidate is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Quantity complete for all open outward POs",
+            await _reject_scan(
+                db,
+                organisation_id=organisation_id,
+                box=box,
+                ean=ean,
+                created_by=created_by,
+                ip_address=ip_address,
+                reason="Quantity complete for all open outward POs",
             )
 
         # Conditional UPDATE — atomically increments only if still has capacity
@@ -452,9 +539,14 @@ async def add_scan(
         # 0 rows updated — another session raced us; retry
 
     if allocated_line_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Quantity complete for all open outward POs",
+        await _reject_scan(
+            db,
+            organisation_id=organisation_id,
+            box=box,
+            ean=ean,
+            created_by=created_by,
+            ip_address=ip_address,
+            reason="Quantity complete for all open outward POs",
         )
 
     # 4. Insert scan row
@@ -546,6 +638,10 @@ async def delete_scan(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Scan already deleted"
         )
+    if scan.scan_result == OutwardScanResultEnum.rejected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete a rejected scan"
+        )
 
     # Load box for customer_id (needed for ledger entry)
     box_result = await db.execute(
@@ -560,6 +656,11 @@ async def delete_scan(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete scans from a closed box",
+        )
+    if box.created_by != deleted_by:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only delete scans from your own active box.",
         )
 
     # Soft-delete
@@ -612,12 +713,15 @@ async def list_open_pos(
     search: str | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    status_filter: OutwardPoStatusEnum | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> OpenPOListResponse:
     from app.models.customer import Customer
 
     base_where = [OutwardPO.organisation_id == org_id]
+    if status_filter is not None:
+        base_where.append(OutwardPO.status == status_filter)
     if customer_id is not None:
         base_where.append(OutwardPO.customer_id == customer_id)
     if search:
@@ -724,6 +828,7 @@ async def preview_po(
     *,
     org_id: int,
     customer_id: int,
+    filename: str = "po.csv",
     csv_bytes: bytes,
 ) -> OutwardPOPreviewResponse:
     from app.models.customer import Customer
@@ -743,23 +848,22 @@ async def preview_po(
             first_10_rows=[], total_rows=0, problems=problems, is_valid=False
         )
 
-    # Parse CSV
+    # Parse the uploaded file (CSV or XLSX)
     try:
-        text_io = io.StringIO(csv_bytes.decode("utf-8-sig"))
-    except UnicodeDecodeError:
-        problems.append("File encoding error — upload a UTF-8 CSV.")
+        fieldnames, rows = _read_upload_rows(filename, csv_bytes)
+    except Exception:
+        problems.append("File encoding error — upload a UTF-8 CSV or a valid XLSX file.")
         return OutwardPOPreviewResponse(
             first_10_rows=[], total_rows=0, problems=problems, is_valid=False
         )
 
-    reader = csv.DictReader(text_io)
-    if reader.fieldnames is None:
+    if fieldnames is None:
         problems.append("CSV file is empty or has no header row.")
         return OutwardPOPreviewResponse(
             first_10_rows=[], total_rows=0, problems=problems, is_valid=False
         )
 
-    actual_columns = {c.strip().lower() for c in reader.fieldnames}
+    actual_columns = {c.strip().lower() for c in fieldnames}
     missing = sorted(_PO_REQUIRED_COLUMNS - actual_columns)
     if missing:
         problems.append(f"Upload failed: missing required column(s): {', '.join(missing)}")
@@ -767,7 +871,6 @@ async def preview_po(
             first_10_rows=[], total_rows=0, problems=problems, is_valid=False
         )
 
-    rows = list(reader)
     if not rows:
         problems.append("CSV file contains no data rows.")
         return OutwardPOPreviewResponse(
@@ -795,6 +898,15 @@ async def preview_po(
             description=(row.get("description") or "").strip() or None,
         ))
 
+    # OUT-2: total quantity across the whole file (not just the first-10 preview)
+    total_quantity = 0
+    for i, row in enumerate(rows):
+        try:
+            total_quantity += int(row.get("ordered_qty", ""))
+        except (ValueError, TypeError):
+            if i >= 10:  # rows 0-9 are already flagged by the preview_rows loop above
+                problems.append(f"Row {i + 1}: ordered_qty is not a valid integer.")
+
     # OUT-3/OUT-2: warn (never block) when duplicate EANs will be consolidated
     ean_counts: dict[str, int] = {}
     for row in rows:
@@ -812,6 +924,7 @@ async def preview_po(
     return OutwardPOPreviewResponse(
         first_10_rows=preview_rows,
         total_rows=len(rows),
+        total_quantity=total_quantity,
         problems=problems,
         is_valid=len(problems) == 0,
         consolidation_notice=consolidation_notice,

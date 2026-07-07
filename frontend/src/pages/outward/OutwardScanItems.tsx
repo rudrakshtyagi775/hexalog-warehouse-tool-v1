@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { ScanLine, Trash2, Package } from 'lucide-react'
 import { useOutwardBox, useAddOutwardScan, useDeleteOutwardScan } from '@/hooks/useOutward'
@@ -66,6 +67,7 @@ export function OutwardScanItemsPage() {
   }
 
   const handleScan = async () => {
+    if (addScan.isPending) return // one in-flight scan at a time; ignore extra Enter/Add triggers
     const ean = eanInput.trim()
     if (!ean || !activeBoxId) return
     setScanError('')
@@ -73,12 +75,20 @@ export function OutwardScanItemsPage() {
 
     try {
       const result = await addScan.mutateAsync({ boxId: activeBoxId, data: { ean } })
-      setEanInput('')
-      if (result.note) setLastNote(result.note)
+      // flushSync forces React to commit the disabled->enabled DOM update (driven
+      // by addScan.isPending flipping to false) before we call .focus() below —
+      // without it, the input can still be `disabled` in the DOM at focus time
+      // and the browser silently drops the focus call.
+      flushSync(() => {
+        setEanInput('')
+        if (result.note) setLastNote(result.note)
+      })
       scanInputRef.current?.focus()
     } catch (err) {
-      setScanError(extractErrorMessage(err))
-      setEanInput('')
+      flushSync(() => {
+        setScanError(extractErrorMessage(err))
+        setEanInput('')
+      })
       scanInputRef.current?.focus()
     }
   }

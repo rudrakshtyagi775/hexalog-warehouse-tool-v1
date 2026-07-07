@@ -1,36 +1,105 @@
 import { useRef, useState } from 'react'
 import { Upload, FileText, CheckCircle } from 'lucide-react'
 import { useCustomers } from '@/hooks/useCustomers'
-import { useUploadOutwardPO } from '@/hooks/useOutward'
+import { useUploadOutwardPO, usePreviewOutwardPO } from '@/hooks/useOutward'
 import { extractErrorMessage } from '@/api/client'
-import { Button } from '@/components/ui/Button'
+import { extractPoNumberForAutofill } from '@/lib/csvPreview'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Table, Thead, Th, Tbody, Tr, Td, EmptyRow } from '@/components/ui/Table'
+import { POPreviewModal } from '@/components/upload/POPreviewModal'
 import type { OutwardPOResponse } from '@/types'
 
 export function UploadOutwardPOPage() {
   const { data: customers = [], isLoading: customersLoading } = useCustomers({ status: 'active' })
   const uploadPO = useUploadOutwardPO()
+  const previewPO = usePreviewOutwardPO()
 
   const [customerId, setCustomerId] = useState('')
   const [poNumber, setPoNumber] = useState('')
+  const [poNumberLocked, setPoNumberLocked] = useState(false)
+  const [poNumberWarning, setPoNumberWarning] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState('')
   const [result, setResult] = useState<OutwardPOResponse | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [importSuccess, setImportSuccess] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const autofillRequestIdRef = useRef(0)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!customerId || !poNumber.trim() || !file) {
-      setError('All fields are required.')
+  const resetFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const closePreview = () => {
+    if (uploadPO.isPending || importSuccess) return
+    setPreviewOpen(false)
+    setFile(null)
+    previewPO.reset()
+    resetFileInput()
+    setPoNumber('')
+    setPoNumberLocked(false)
+    setPoNumberWarning('')
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0] ?? null
+    if (!selected) return
+
+    if (!customerId) {
+      setError('Select a customer before choosing a file.')
+      resetFileInput()
       return
     }
+
+    // Resolve the auto-fill outcome BEFORE opening the preview or firing the
+    // backend preview call, so the PO Number field is already correct in the
+    // very same render that opens the modal — no post-open update, no race.
+    const requestId = ++autofillRequestIdRef.current
+    let autofill: ReturnType<typeof extractPoNumberForAutofill> = { status: 'none' }
+    try {
+      const text = await selected.text()
+      autofill = extractPoNumberForAutofill(text)
+    } catch {
+      // Unreadable file — leave autofill as 'none'; the backend preview call
+      // below still surfaces the real read error authoritatively.
+    }
+
+    // A newer file was selected while this read was in flight — abandon this one.
+    if (autofillRequestIdRef.current !== requestId) return
+
     setError('')
     setResult(null)
+    setFile(selected)
+    setPreviewOpen(true)
+
+    if (autofill.status === 'single') {
+      setPoNumber(autofill.poNumber)
+      setPoNumberLocked(true)
+      setPoNumberWarning('')
+    } else if (autofill.status === 'multiple') {
+      setPoNumber('')
+      setPoNumberLocked(false)
+      setPoNumberWarning(
+        'Multiple PO numbers found in this CSV. Please upload a single PO per file.',
+      )
+    } else {
+      setPoNumberLocked(false)
+      setPoNumberWarning('')
+    }
+
+    const fd = new FormData()
+    fd.append('customer_id', customerId)
+    fd.append('file', selected)
+    previewPO.mutate(fd)
+  }
+
+  const handleImport = async () => {
+    if (!file) return
+    setError('')
 
     const fd = new FormData()
     fd.append('customer_id', customerId)
@@ -39,12 +108,24 @@ export function UploadOutwardPOPage() {
 
     try {
       const po = await uploadPO.mutateAsync(fd)
-      setResult(po)
-      setPoNumber('')
-      setFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      setImportSuccess(true)
+      setTimeout(() => {
+        setResult(po)
+        setPreviewOpen(false)
+        setImportSuccess(false)
+        setPoNumber('')
+        setPoNumberLocked(false)
+        setFile(null)
+        previewPO.reset()
+        resetFileInput()
+      }, 600)
     } catch (err) {
       setError(extractErrorMessage(err))
+      setPreviewOpen(false)
+      setFile(null)
+      setPoNumberLocked(false)
+      previewPO.reset()
+      resetFileInput()
     }
   }
 
@@ -55,6 +136,9 @@ export function UploadOutwardPOPage() {
     if (status === 'open') return 'blue' as const
     return 'green' as const
   }
+
+  const selectedCustomer = customers.find((c) => String(c.id) === customerId)
+  const preview = previewPO.data
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -76,7 +160,7 @@ export function UploadOutwardPOPage() {
           </Alert>
         )}
 
-        <form onSubmit={(e) => void handleSubmit(e)} className="space-y-5">
+        <div className="space-y-5">
           <div>
             <Label htmlFor="customer" required>
               Customer
@@ -108,6 +192,8 @@ export function UploadOutwardPOPage() {
               placeholder="e.g. PO-2026-001"
               value={poNumber}
               onChange={(e) => setPoNumber(e.target.value)}
+              readOnly={poNumberLocked}
+              error={poNumberWarning || undefined}
             />
           </div>
 
@@ -145,16 +231,11 @@ export function UploadOutwardPOPage() {
                 type="file"
                 accept=".csv,text/csv"
                 className="hidden"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => void handleFileChange(e)}
               />
             </label>
           </div>
-
-          <Button type="submit" loading={uploadPO.isPending} className="w-full">
-            <Upload className="h-4 w-4" />
-            Upload Outward PO
-          </Button>
-        </form>
+        </div>
       </Card>
 
       {result && (
@@ -199,6 +280,35 @@ export function UploadOutwardPOPage() {
           </Table>
         </Card>
       )}
+
+      <POPreviewModal
+        open={previewOpen}
+        onClose={closePreview}
+        title="Outward Purchase Order Preview"
+        subtitle="Please review the purchase order before importing."
+        customerName={selectedCustomer?.name ?? ''}
+        poNumber={poNumber}
+        loading={previewPO.isPending}
+        loadError={
+          previewPO.isError ? extractErrorMessage(previewPO.error, 'Could not read this file.') : null
+        }
+        data={
+          preview
+            ? {
+                rows: preview.first_10_rows,
+                totalRows: preview.total_rows,
+                totalQuantity: preview.total_quantity,
+                problems: preview.problems,
+                isValid: preview.is_valid,
+                consolidationNotice: preview.consolidation_notice,
+              }
+            : null
+        }
+        onImport={() => void handleImport()}
+        importPending={uploadPO.isPending}
+        importSuccess={importSuccess}
+        successMessage="Purchase order imported"
+      />
     </div>
   )
 }

@@ -108,6 +108,7 @@ class OutwardPOPreviewRow(BaseModel):
 class OutwardPOPreviewResponse(BaseModel):
     first_10_rows: list[OutwardPOPreviewRow]
     total_rows: int
+    total_quantity: int = 0
     problems: list[str]
     is_valid: bool
     consolidation_notice: str | None = None

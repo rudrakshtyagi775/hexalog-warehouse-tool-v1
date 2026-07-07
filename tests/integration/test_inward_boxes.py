@@ -78,25 +78,32 @@ async def test_create_box_success(client, inward_operator_user, org, customer):
     assert body["is_read_only"] is False
 
 
-async def test_create_box_generates_sequential_ids(client, packer_user, admin_user, org, customer):
-    # Admin can create two boxes without the single-active-box guard
-    admin_token = await _login(client, "admin@test.com", "AdminPass1!", org.id)
+async def test_create_box_generates_sequential_ids(client, inward_operator_user, org, customer):
+    # Close box1 first (moves it out of 'scanning') so the single-active-box guard
+    # — which applies unconditionally to every inward operator, no exceptions — allows box2.
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     r1 = await client.post(
         "/api/inward/boxes",
         json={"customer_id": customer.id},
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    box1_id = r1.json()["box_id"]
+    await client.post(
+        f"/api/inward/boxes/{box1_id}/close",
+        json={"physical_qty": 0},
+        headers={"Authorization": f"Bearer {token}"},
     )
     r2 = await client.post(
         "/api/inward/boxes",
         json={"customer_id": customer.id},
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     n1 = int(r1.json()["box_id"].split("-")[-1])
     n2 = int(r2.json()["box_id"].split("-")[-1])
     assert n2 == n1 + 1
 
 
-async def test_non_admin_cannot_create_second_active_box(
+async def test_operator_cannot_create_second_active_box(
     client, inward_operator_user, org, customer, open_box, db
 ):
     # Assign open_box to this operator so the guard fires
@@ -118,10 +125,60 @@ async def test_create_box_unauthenticated(client, customer, org):
     assert resp.status_code == 401
 
 
+# ── RBAC: list_boxes is scoped to the operator's own submissions ─────────────
+
+async def test_list_boxes_excludes_other_operators_boxes(
+    client, inward_operator_user, org, customer, db
+):
+    """PRD: inward operator may view only own inward history."""
+    from app.models.enums import UserRoleEnum
+    from app.models.user import User, UserOrganisation, UserRole
+    from app.services.password_service import hash_password
+
+    other_operator = User(
+        email="inward2@test.com",
+        password_hash=hash_password("Inward2Pass1!"),
+        full_name="Other Inward Operator",
+        is_active=True,
+    )
+    db.add(other_operator)
+    await db.flush()
+    db.add(UserOrganisation(user_id=other_operator.id, organisation_id=org.id))
+    db.add(
+        UserRole(user_id=other_operator.id, organisation_id=org.id, role=UserRoleEnum.inward_operator)
+    )
+    await db.flush()
+
+    other_box = InwardBox(
+        box_id="B-TST-000098",
+        organisation_id=org.id,
+        customer_id=customer.id,
+        status=InwardBoxStatusEnum.scanning,
+        created_by=other_operator.id,
+    )
+    db.add(other_box)
+    await db.flush()
+
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
+    own_box_resp = await client.post(
+        "/api/inward/boxes",
+        json={"customer_id": customer.id},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    own_box_id = own_box_resp.json()["box_id"]
+
+    resp = await client.get("/api/inward/boxes", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    body = resp.json()
+    box_ids = {item["box_id"] for item in body["items"]}
+    assert own_box_id in box_ids
+    assert other_box.box_id not in box_ids
+
+
 # ── Get box ───────────────────────────────────────────────────────────────────
 
-async def test_get_box_success(client, packer_user, org, open_box):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_get_box_success(client, inward_operator_user, org, open_box):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.get(
         f"/api/inward/boxes/{open_box.box_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -133,7 +190,7 @@ async def test_get_box_success(client, packer_user, org, open_box):
     assert body["scans"] == []
 
 
-async def test_get_completed_box_is_read_only(client, packer_user, org, db, customer):
+async def test_get_completed_box_is_read_only(client, inward_operator_user, org, db, customer):
     box = InwardBox(
         box_id="B-TST-000001",
         organisation_id=org.id,
@@ -145,7 +202,7 @@ async def test_get_completed_box_is_read_only(client, packer_user, org, db, cust
     db.add(box)
     await db.flush()
 
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.get(
         f"/api/inward/boxes/{box.box_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -154,13 +211,24 @@ async def test_get_completed_box_is_read_only(client, packer_user, org, db, cust
     assert resp.json()["is_read_only"] is True
 
 
-async def test_get_box_not_found(client, packer_user, org):
-    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+async def test_get_box_not_found(client, inward_operator_user, org):
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     resp = await client.get(
         "/api/inward/boxes/B-XXX-999999",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 404
+
+
+async def test_get_box_requires_inward_operator(client, packer_user, org, open_box):
+    """RBAC: Packer has no access to Inward box details (PRD §4.2 — Packer=No
+    on every Inward capability)."""
+    token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
+    resp = await client.get(
+        f"/api/inward/boxes/{open_box.box_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
 
 
 # ── Close box ─────────────────────────────────────────────────────────────────
@@ -339,7 +407,7 @@ async def test_submit_box_writes_ledger_entries(client, inward_operator_user, or
     assert all(e.quantity_change == 1 for e in entries)
 
 
-async def test_submit_box_sequential_inscan_numbers(client, admin_user, org, db, customer):
+async def test_submit_box_sequential_inscan_numbers(client, inward_operator_user, org, db, customer):
     """Counter increments per customer per day; second submission gets next number."""
     box1 = InwardBox(
         box_id="B-TST-000095",
@@ -360,7 +428,7 @@ async def test_submit_box_sequential_inscan_numbers(client, admin_user, org, db,
     db.add_all([box1, box2])
     await db.flush()
 
-    token = await _login(client, "admin@test.com", "AdminPass1!", org.id)
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
     r1 = await client.post(
         f"/api/inward/boxes/{box1.box_id}/submit",
         headers={"Authorization": f"Bearer {token}"},

@@ -3,13 +3,14 @@ import { Upload, FileText, CheckCircle } from 'lucide-react'
 import { useCustomers } from '@/hooks/useCustomers'
 import { useUploadPO } from '@/hooks/useInward'
 import { extractErrorMessage } from '@/api/client'
-import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Label } from '@/components/ui/Label'
 import { Alert } from '@/components/ui/Alert'
 import { Badge } from '@/components/ui/Badge'
 import { Card, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Table, Thead, Th, Tbody, Tr, Td, EmptyRow } from '@/components/ui/Table'
+import { POPreviewModal, type POPreviewData } from '@/components/upload/POPreviewModal'
+import { parseInwardPOPreview } from '@/lib/csvPreview'
 import type { POResponse } from '@/types'
 
 export function UploadPOPage() {
@@ -21,16 +22,57 @@ export function UploadPOPage() {
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState('')
   const [result, setResult] = useState<POResponse | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewData, setPreviewData] = useState<POPreviewData | null>(null)
+  const [importSuccess, setImportSuccess] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!customerId || !poNumber.trim() || !file) {
-      setError('All fields are required.')
+  const resetFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const closePreview = () => {
+    if (uploadPO.isPending || importSuccess) return
+    setPreviewOpen(false)
+    setFile(null)
+    setPreviewData(null)
+    setPreviewError(null)
+    resetFileInput()
+  }
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0] ?? null
+    if (!selected) return
+
+    if (!customerId || !poNumber.trim()) {
+      setError('Select a customer and enter a PO/Invoice number before choosing a file.')
+      resetFileInput()
       return
     }
+
     setError('')
     setResult(null)
+    setFile(selected)
+    setPreviewOpen(true)
+    setPreviewData(null)
+    setPreviewError(null)
+    setPreviewLoading(true)
+
+    try {
+      const text = await selected.text()
+      setPreviewData(parseInwardPOPreview(text, poNumber))
+    } catch {
+      setPreviewError('Could not read this file.')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const handleImport = async () => {
+    if (!file) return
+    setError('')
 
     const fd = new FormData()
     fd.append('customer_id', customerId)
@@ -39,12 +81,24 @@ export function UploadPOPage() {
 
     try {
       const po = await uploadPO.mutateAsync(fd)
-      setResult(po)
-      setPoNumber('')
-      setFile(null)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      setImportSuccess(true)
+      setTimeout(() => {
+        setResult(po)
+        setPreviewOpen(false)
+        setImportSuccess(false)
+        setPoNumber('')
+        setFile(null)
+        setPreviewData(null)
+        setPreviewError(null)
+        resetFileInput()
+      }, 600)
     } catch (err) {
       setError(extractErrorMessage(err))
+      setPreviewOpen(false)
+      setFile(null)
+      setPreviewData(null)
+      setPreviewError(null)
+      resetFileInput()
     }
   }
 
@@ -56,6 +110,8 @@ export function UploadPOPage() {
     if (status === 'partial') return 'yellow' as const
     return 'green' as const
   }
+
+  const selectedCustomer = customers.find((c) => String(c.id) === customerId)
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -77,7 +133,7 @@ export function UploadPOPage() {
           </Alert>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="space-y-5">
           <div>
             <Label htmlFor="customer" required>
               Customer
@@ -146,19 +202,13 @@ export function UploadPOPage() {
                 type="file"
                 accept=".csv,text/csv"
                 className="hidden"
-                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => void handleFileChange(e)}
               />
             </label>
           </div>
-
-          <Button type="submit" loading={uploadPO.isPending} className="w-full">
-            <Upload className="h-4 w-4" />
-            Upload Purchase Order
-          </Button>
-        </form>
+        </div>
       </Card>
 
-      {/* Success result */}
       {result && (
         <Card>
           <div className="flex items-start gap-3 mb-5">
@@ -201,6 +251,22 @@ export function UploadPOPage() {
           </Table>
         </Card>
       )}
+
+      <POPreviewModal
+        open={previewOpen}
+        onClose={closePreview}
+        title="Inward Purchase Order Preview"
+        subtitle="Please review the purchase order before importing."
+        customerName={selectedCustomer?.name ?? ''}
+        poNumber={poNumber}
+        loading={previewLoading}
+        loadError={previewError}
+        data={previewData}
+        onImport={() => void handleImport()}
+        importPending={uploadPO.isPending}
+        importSuccess={importSuccess}
+        successMessage="Purchase order imported"
+      />
     </div>
   )
 }

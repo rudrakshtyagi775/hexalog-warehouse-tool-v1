@@ -78,6 +78,18 @@ async def test_get_outward_box_not_found(client, packer_user, org):
     assert resp.status_code == 404
 
 
+async def test_get_outward_box_inward_operator_denied(
+    client, inward_operator_user, org, open_outward_box
+):
+    """RBAC: Inward Operator has no visibility into Outward box detail."""
+    token = await _login(client, "inward@test.com", "InwardPass1!", org.id)
+    resp = await client.get(
+        f"/api/outward/boxes/{open_outward_box.box_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
 async def test_close_outward_box_success(client, packer_user, org, open_outward_box):
     token = await _login(client, "packer@test.com", "PackerPass1!", org.id)
     resp = await client.post(

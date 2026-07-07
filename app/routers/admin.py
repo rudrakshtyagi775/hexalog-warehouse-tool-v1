@@ -250,13 +250,27 @@ async def delete_inward_box_endpoint(
     return MessageResponse(message="Box deleted")
 
 
+def _report_file_response(result: bytes, fmt: str, slug: str, from_date: date) -> Response:
+    media_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if fmt == "xlsx"
+        else "text/csv"
+    )
+    filename = f"report-{slug}-{from_date}.{fmt}"
+    return Response(
+        content=result,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @router.get("/reports/outward-po")
 async def report_outward_po_endpoint(
     request: Request,
     from_date: date = Query(...),
     to_date: date = Query(...),
     customer_id: int | None = Query(default=None),
-    format: Literal["json", "csv"] = Query(default="json"),
+    format: Literal["json", "csv", "xlsx"] = Query(default="json"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
     current_user: CurrentUser = Depends(require_admin),
@@ -275,12 +289,7 @@ async def report_outward_po_endpoint(
         ip_address=get_client_ip(request),
     )
     if isinstance(result, bytes):
-        filename = f"report-outward-po-{from_date}.csv"
-        return Response(
-            content=result,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
+        return _report_file_response(result, format, "outward-po", from_date)
     return result
 
 
@@ -290,7 +299,7 @@ async def report_inscan_endpoint(
     from_date: date = Query(...),
     to_date: date = Query(...),
     customer_id: int | None = Query(default=None),
-    format: Literal["json", "csv"] = Query(default="json"),
+    format: Literal["json", "csv", "xlsx"] = Query(default="json"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
     current_user: CurrentUser = Depends(require_admin),
@@ -309,12 +318,7 @@ async def report_inscan_endpoint(
         ip_address=get_client_ip(request),
     )
     if isinstance(result, bytes):
-        filename = f"report-inscan-{from_date}.csv"
-        return Response(
-            content=result,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
+        return _report_file_response(result, format, "inscan", from_date)
     return result
 
 
@@ -324,7 +328,7 @@ async def report_item_packing_endpoint(
     from_date: date = Query(...),
     to_date: date = Query(...),
     customer_id: int | None = Query(default=None),
-    format: Literal["json", "csv"] = Query(default="json"),
+    format: Literal["json", "csv", "xlsx"] = Query(default="json"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
     current_user: CurrentUser = Depends(require_admin),
@@ -343,12 +347,7 @@ async def report_item_packing_endpoint(
         ip_address=get_client_ip(request),
     )
     if isinstance(result, bytes):
-        filename = f"report-item-packing-{from_date}.csv"
-        return Response(
-            content=result,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
+        return _report_file_response(result, format, "item-packing", from_date)
     return result
 
 
@@ -358,7 +357,7 @@ async def report_variance_endpoint(
     from_date: date = Query(...),
     to_date: date = Query(...),
     customer_id: int | None = Query(default=None),
-    format: Literal["json", "csv"] = Query(default="json"),
+    format: Literal["json", "csv", "xlsx"] = Query(default="json"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
     current_user: CurrentUser = Depends(require_admin),
@@ -377,10 +376,5 @@ async def report_variance_endpoint(
         ip_address=get_client_ip(request),
     )
     if isinstance(result, bytes):
-        filename = f"report-variance-{from_date}.csv"
-        return Response(
-            content=result,
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
+        return _report_file_response(result, format, "variance", from_date)
     return result

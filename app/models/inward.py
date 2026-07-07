@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -155,6 +156,7 @@ class InwardBox(TimestampMixin, Base):
     __tablename__ = "inward_boxes"
     __table_args__ = (
         Index("idx_inward_boxes_org_status", "organisation_id", "status"),
+        CheckConstraint("scanned_qty >= 0", name="ck_inward_boxes_scanned_qty_nonneg"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

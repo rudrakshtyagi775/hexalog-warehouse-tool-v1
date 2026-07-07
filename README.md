@@ -1,18 +1,20 @@
-# Hexalog Warehouse Tool V1
+# Hexalog Warehouse Tool — V1
 
-**Version:** 1.0  
-**Status:** Pre-implementation — schema approved, V1 build in progress  
-**Tech Lead:** Arpit  
-**Deadline:** 30 June 2026
+Internal warehouse management tool for Hexalog operations. Manages everything coming into the warehouse (Inward / Inscan) and everything going out of it (Outward / Packing) on a single shared platform.
+
+> **V1 Deadline: 30 June 2026**  
+> **Schema Status: Ready for Arpit Review**  
+> **PRD Version: 1.0 — Adesh Agarwal, 12 June 2026**
 
 ---
 
-## Overview
+## What It Does
 
-The Hexalog Warehouse Tool is a multi-tenant web application used inside the warehouse on desktops and laptops with USB barcode scanners. It replaces a previous ad-hoc system with two integrated modules on a shared platform:
-
-- **Inward (Inscan):** Operators receive incoming cartons, scan items, verify counts, and submit. Each submission generates a unique Inscan Number for tracking.
-- **Outward (Packing):** Admins upload customer purchase orders. Packers generate box labels, scan items into boxes against open POs, and mark boxes full. Every scan is validated and FIFO-allocated to the oldest outstanding PO.
+| Module | Who Uses It | What It Does |
+|--------|-------------|--------------|
+| **Inward (Inscan)** | Inward Operators | Scan incoming cartons, verify item counts, submit with a unique Inscan Number |
+| **Outward (Packing)** | Packers | Generate box labels, scan items against open POs, FIFO-allocate to the correct PO, mark boxes full |
+| **Shared Platform** | Admins | User management, customer master, PO upload, reports, audit trail, inventory ledger |
 
 ---
 
@@ -25,21 +27,11 @@ The Hexalog Warehouse Tool is a multi-tenant web application used inside the war
 | Database | PostgreSQL 16 |
 | ORM | Async SQLAlchemy + asyncpg |
 | Migrations | Alembic |
-| Auth | JWT + `tokens_invalidated_at` (force-logout without a session store) |
-| Application Logging | structlog (structured JSON) |
-| PDF Generation | WeasyPrint (box labels — A6 / 4×6 inch thermal stock) |
+| Authentication | JWT — `tokens_invalidated_at` invalidation strategy |
+| Logging | structlog (application) + `audit_logs` table (business audit) |
+| PDF Generation | WeasyPrint |
 
-> Redis is explicitly out of scope for V1. No session store, no cache, no queue.
-
----
-
-## Documentation
-
-| Document | Contents |
-|----------|----------|
-| [Feature List](docs/feature-list.md) | All 40 V1 features with PRD IDs; FIFO algorithm; verbatim error messages from PRD §11; out-of-scope items |
-| [Architecture Overview](docs/architecture-overview.md) | System layers, module breakdown, authentication flow, FIFO concurrency design, inward transaction design, key architectural decisions |
-| [Database Schema V1](docs/database-schema-v1.md) | 16-table schema (post-review, all 10 bugs fixed); 31 indexes; 11 enums; counter UPSERT strategy; inventory ledger strategy; ER diagram |
+> **Redis is explicitly out of scope for V1.**
 
 ---
 
@@ -47,40 +39,67 @@ The Hexalog Warehouse Tool is a multi-tenant web application used inside the war
 
 | Role | Access |
 |------|--------|
-| `admin` | Full access — manage users, customers, POs; view all reports; force-close boxes |
-| `inward_operator` | Inward scanning — receive, scan, verify, and submit boxes |
-| `packer` | Outward packing — generate labels, scan items, mark boxes full |
+| Admin | PO upload and management, reports, user management, customer master |
+| Inward Operator | Inward scanning workflow end-to-end |
+| Packer | Box label creation, Pack Items workflow, packing history |
 
-One user can hold multiple roles. All role checks are enforced server-side on every API endpoint.
-
----
-
-## Repository Structure
-
-```
-hexalog_packagingtool/
-├── README.md
-└── docs/
-    ├── feature-list.md
-    ├── architecture-overview.md
-    └── database-schema-v1.md
-```
+One user can hold multiple roles. Role assignment is per organisation.
 
 ---
 
-## Open Items Before Build
-
-These must be resolved with Ops before Phase 0 begins:
-
-| Item | Needed Before | Owner |
-|------|--------------|-------|
-| Confirm `APP_TIMEZONE=Asia/Kolkata` (affects Inscan Number dates) | Phase 0 sign-off | Arpit / Ops |
-| Confirm JWT 12h TTL = "12h working session" (not inactivity timeout) | Phase 0 sign-off | Adesh / Ops |
-| Label printer model + exact label dimensions (A6 assumed) | Phase 2 | Ops |
-| Style-code scanning on outward side (Q-3) | Phase 3 | Adesh / Ops |
+## Project Structure
+.
+├── alembic/ # Alembic migration environment
+│ ├── env.py # Must use ALEMBIC_DATABASE_URL (psycopg2, not asyncpg)
+│ └── versions/ # Migration scripts
+├── app/
+│ ├── api/ # FastAPI routers (per module)
+│ ├── models/ # SQLAlchemy ORM models
+│ ├── schemas/ # Pydantic request/response schemas
+│ ├── services/ # Business logic layer
+│ ├── repositories/ # Data access layer
+│ └── core/ # Config, auth, logging, dependencies
+├── frontend/ # React + Vite + TypeScript
+│ └── src/
+├── docs/ # Engineering documentation
+│ ├── feature-list.md
+│ ├── architecture-overview.md
+│ └── database-schema-v1.md
+├── alembic.ini
+└── README.md
 
 ---
-
-## Source
-
-PRD: *Warehouse Tool v1.0* — Adesh Agarwal, 12 June 2026
+## Environment Variables
+Two database URLs are required — one for the async application runtime and one for synchronous Alembic migrations.
+| Variable | Driver | Used By |
+|----------|--------|---------|
+| `DATABASE_URL` | `postgresql+asyncpg://` | FastAPI application |
+| `ALEMBIC_DATABASE_URL` | `postgresql+psycopg2://` | Alembic migrations only |
+| `SECRET_KEY` | — | JWT signing |
+| `APP_TIMEZONE` | e.g. `Asia/Kolkata` | Inscan Number date generation |
+| `ACCESS_TOKEN_EXPIRE_HOURS` | e.g. `12` | JWT TTL |
+---
+## Build Order
+Phases are independently testable. Complete each phase before starting the next.
+| Phase | Deliverable | Why This Order |
+|-------|-------------|----------------|
+| 0 | Schema · Alembic · Auth · RBAC · Organisations · Customer Master · Audit-log wiring | Foundation everything else depends on |
+| 1 | Inward module end-to-end (steps 1–6, Inscan Numbers, Inward History) | Smaller, self-contained; warehouse can start using it while Phase 2–3 is built |
+| 2 | Outward: PO upload + preview + manage · Open POs tab · Label generation + PDF | Non-scanning outward features; Admins can start loading real POs |
+| 3 | Pack Items: scan validation · FIFO allocation · concurrency · delete-scan · mark-full | Hardest part; build on a stable base and unit-test the allocation path |
+| 4 | All four reports + stock-flag UI notice | Reports need real data from Phases 1–3 |
+| 5 | Admin tooling · background exports · 300 ms performance pass | Hardening after core is proven |
+---
+## Documentation
+| Document | Purpose |
+|----------|---------|
+| [Feature List](docs/feature-list.md) | Complete V1 feature inventory with PRD requirement IDs |
+| [Architecture Overview](docs/architecture-overview.md) | System design, tech decisions, data flow |
+| [Database Schema V1](docs/database-schema-v1.md) | Authoritative schema reference — all 16 tables, indexes, constraints |
+---
+## Team
+| Role | Person |
+|------|--------|
+| Product | Adesh Agarwal |
+| Tech Lead | Arpit |
+| Engineering | TBD |

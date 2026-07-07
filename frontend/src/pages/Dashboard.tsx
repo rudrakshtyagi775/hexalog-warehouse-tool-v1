@@ -10,7 +10,10 @@ import {
   ClipboardList,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { canAccessRoute } from '@/config/permissions'
 
+// All 5 steps are the Inward workflow — inward_operator only (PRD: admin has no
+// inward permissions, packer has no inward permissions).
 const workflowSteps = [
   {
     step: 1,
@@ -18,7 +21,6 @@ const workflowSteps = [
     desc: 'Import a purchase order CSV to register expected stock.',
     icon: Upload,
     to: '/upload-po',
-    roles: ['admin', 'inward_operator'],
   },
   {
     step: 2,
@@ -26,7 +28,6 @@ const workflowSteps = [
     desc: 'Open a new scanning box for a customer.',
     icon: Package,
     to: '/create-box',
-    roles: ['admin', 'packer'],
   },
   {
     step: 3,
@@ -34,7 +35,6 @@ const workflowSteps = [
     desc: 'Scan EAN barcodes into the active box.',
     icon: ScanLine,
     to: '/scan',
-    roles: ['admin', 'packer'],
   },
   {
     step: 4,
@@ -42,7 +42,6 @@ const workflowSteps = [
     desc: 'View and manage boxes currently being packed.',
     icon: Boxes,
     to: '/active-boxes',
-    roles: ['admin', 'packer', 'inward_operator'],
   },
   {
     step: 5,
@@ -50,10 +49,10 @@ const workflowSteps = [
     desc: 'Verify physical count and submit for inscan number.',
     icon: CheckSquare,
     to: '/close-box',
-    roles: ['admin', 'packer'],
   },
 ]
 
+// Admin only (PRD: manage customers / reports)
 const secondaryLinks = [
   { title: 'Customers', icon: Users, to: '/customers' },
   { title: 'Reports', icon: ClipboardList, to: '/reports' },
@@ -63,7 +62,7 @@ export function DashboardPage() {
   const navigate = useNavigate()
   const { user, roles } = useAuth()
 
-  const canAccess = (stepRoles: string[]) => roles.some((r) => stepRoles.includes(r))
+  const canAccess = (path: string) => canAccessRoute(roles, path)
 
   return (
     <div className="max-w-5xl mx-auto space-y-8">
@@ -85,7 +84,7 @@ export function DashboardPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {workflowSteps.map((step, idx) => {
             const Icon = step.icon
-            const accessible = canAccess(step.roles)
+            const accessible = canAccess(step.to)
             return (
               <button
                 key={step.to}
@@ -117,24 +116,28 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Secondary quick links */}
-      <div>
-        <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
-          Management
-        </h3>
-        <div className="flex gap-4 flex-wrap">
-          {secondaryLinks.map(({ title, icon: Icon, to }) => (
-            <button
-              key={to}
-              onClick={() => navigate(to)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:border-blue-400 hover:text-blue-600 transition-colors"
-            >
-              <Icon className="h-4 w-4" />
-              {title}
-            </button>
-          ))}
+      {/* Secondary quick links — admin only, hidden entirely for other roles */}
+      {secondaryLinks.filter(({ to }) => canAccess(to)).length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
+            Management
+          </h3>
+          <div className="flex gap-4 flex-wrap">
+            {secondaryLinks
+              .filter(({ to }) => canAccess(to))
+              .map(({ title, icon: Icon, to }) => (
+                <button
+                  key={to}
+                  onClick={() => navigate(to)}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm font-medium text-gray-700 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                >
+                  <Icon className="h-4 w-4" />
+                  {title}
+                </button>
+              ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies.auth import get_current_user, require_inward_operator
+from app.dependencies.auth import require_inward_operator
 from app.models.enums import InwardBoxStatusEnum, InwardReferenceStatusEnum
 from app.models.inward import InwardBox, InwardPO
 from app.schemas.inward import (
@@ -173,7 +173,6 @@ async def create_box_endpoint(
         customer_id=body.customer_id,
         organisation_id=current_user.organisation_id,
         created_by=current_user.user_id,
-        user_roles=current_user.roles,
         ip_address=get_client_ip(request),
         inward_reference_id=body.inward_reference_id,
         box_number=body.box_number,
@@ -195,6 +194,7 @@ async def list_boxes_endpoint(
     return await inward_service.list_boxes(
         db,
         org_id=current_user.organisation_id,
+        created_by=current_user.user_id,
         status_filter=status_filter,
         customer_id=customer_id,
         from_date=from_date,
@@ -207,7 +207,7 @@ async def list_boxes_endpoint(
 @router.get("/boxes/{box_id}", response_model=BoxResponse)
 async def get_box_endpoint(
     box_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_inward_operator),
     db: AsyncSession = Depends(get_db),
 ) -> BoxResponse:
     box = await inward_service.get_box(

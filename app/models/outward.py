@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -61,6 +62,11 @@ class OutwardPOLine(Base):
             "organisation_id",
             "ean",
             postgresql_where=text("packed_qty < ordered_qty"),
+        ),
+        CheckConstraint("ordered_qty > 0", name="ck_outward_po_lines_ordered_qty_positive"),
+        CheckConstraint(
+            "packed_qty >= 0 AND packed_qty <= ordered_qty",
+            name="ck_outward_po_lines_packed_qty_range",
         ),
     )
 

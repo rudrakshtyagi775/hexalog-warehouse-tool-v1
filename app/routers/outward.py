@@ -17,13 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies.auth import (
-    get_current_user,
-    require_inward_operator,
-    require_packer,
-    require_packer_or_inward_operator,
-)
-from app.models.enums import OutwardBoxStatusEnum
+from app.dependencies.auth import require_admin, require_admin_or_packer, require_packer
+from app.models.enums import OutwardBoxStatusEnum, OutwardPoStatusEnum, UserRoleEnum
 from app.models.outward import OutwardBox, OutwardPO
 from app.schemas.outward import (
     LabelGenerateRequest,
@@ -77,7 +72,7 @@ async def upload_po_endpoint(
     po_number: str = Form(...),
     customer_id: int = Form(...),
     file: UploadFile = ...,
-    current_user=Depends(require_inward_operator),
+    current_user=Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> OutwardPOResponse:
     csv_bytes = await file.read()
@@ -88,6 +83,7 @@ async def upload_po_endpoint(
         uploaded_by=current_user.user_id,
         ip_address=get_client_ip(request),
         po_number=po_number,
+        filename=file.filename or "po.csv",
         csv_bytes=csv_bytes,
     )
     # Eagerly load lines for response serialisation — lazy="raise" blocks post-commit access
@@ -106,9 +102,11 @@ async def list_open_pos_endpoint(
     to_date: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=200),
-    current_user=Depends(require_packer_or_inward_operator),
+    current_user=Depends(require_admin_or_packer),
     db: AsyncSession = Depends(get_db),
 ) -> OpenPOListResponse:
+    # Admin sees POs in every status; packer is restricted to open POs only (PRD).
+    is_admin = UserRoleEnum.admin in current_user.roles
     return await outward_service.list_open_pos(
         db,
         org_id=current_user.organisation_id,
@@ -116,6 +114,7 @@ async def list_open_pos_endpoint(
         search=search,
         from_date=from_date,
         to_date=to_date,
+        status_filter=None if is_admin else OutwardPoStatusEnum.open,
         page=page,
         page_size=page_size,
     )
@@ -126,7 +125,7 @@ async def toggle_po_status_endpoint(
     po_id: int,
     body: OutwardPOToggleRequest,
     request: Request,
-    current_user=Depends(require_inward_operator),
+    current_user=Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> OutwardPOResponse:
     return await outward_service.toggle_po_status(
@@ -143,7 +142,7 @@ async def toggle_po_status_endpoint(
 async def preview_po_endpoint(
     customer_id: int = Form(...),
     file: UploadFile = ...,
-    current_user=Depends(require_inward_operator),
+    current_user=Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> OutwardPOPreviewResponse:
     csv_bytes = await file.read()
@@ -151,6 +150,7 @@ async def preview_po_endpoint(
         db,
         org_id=current_user.organisation_id,
         customer_id=customer_id,
+        filename=file.filename or "po.csv",
         csv_bytes=csv_bytes,
     )
 
@@ -175,7 +175,7 @@ async def create_box_endpoint(
 @router.get("/boxes/{box_id}", response_model=OutwardBoxResponse)
 async def get_box_endpoint(
     box_id: str,
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_packer),
     db: AsyncSession = Depends(get_db),
 ) -> OutwardBoxResponse:
     box = await outward_service.get_box(
@@ -299,12 +299,20 @@ async def generate_labels_endpoint(
 
 @router.get("/labels/pdf")
 async def download_labels_pdf_endpoint(
+    request: Request,
     box_ids: list[str] = Query(...),
     current_user=Depends(require_packer),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     boxes = await _load_boxes_for_pdf(db, org_id=current_user.organisation_id, box_ids=box_ids)
     pdf_bytes = label_service.render_label_pdf(boxes)
+    await label_service.audit_label_download(
+        db,
+        box_ids=box_ids,
+        org_id=current_user.organisation_id,
+        user_id=current_user.user_id,
+        ip_address=get_client_ip(request),
+    )
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

@@ -165,6 +165,7 @@ class InscanReportRow(BaseModel):
     variance: int
     date: datetime
     user_name: str | None
+    status: str
 
 
 class InscanReportResponse(BaseModel):

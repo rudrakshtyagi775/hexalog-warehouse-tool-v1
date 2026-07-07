@@ -64,8 +64,9 @@ async def get_current_user(
 def require_roles(*allowed_roles: UserRoleEnum):
     """Return a dependency that enforces role membership.
 
-    Admins implicitly pass every role check — always include UserRoleEnum.admin
-    in the allowed_roles set.
+    Every allowed role must be listed explicitly — there is no implicit
+    superuser role. Admin only passes a check if UserRoleEnum.admin is
+    explicitly included in allowed_roles.
     """
     def _check(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
         if not any(r in current_user.roles for r in allowed_roles):
@@ -78,10 +79,9 @@ def require_roles(*allowed_roles: UserRoleEnum):
     return _check
 
 
-# Convenience shorthands — admin implicitly passes all checks
+# Convenience shorthands — each lists its allowed roles explicitly (PRD permission matrix).
+# Admin is NOT a superuser: it is only included where the PRD grants admin that permission.
 require_admin = require_roles(UserRoleEnum.admin)
-require_inward_operator = require_roles(UserRoleEnum.inward_operator, UserRoleEnum.admin)
-require_packer = require_roles(UserRoleEnum.packer, UserRoleEnum.admin)
-require_packer_or_inward_operator = require_roles(
-    UserRoleEnum.packer, UserRoleEnum.inward_operator, UserRoleEnum.admin
-)
+require_inward_operator = require_roles(UserRoleEnum.inward_operator)
+require_packer = require_roles(UserRoleEnum.packer)
+require_admin_or_packer = require_roles(UserRoleEnum.admin, UserRoleEnum.packer)

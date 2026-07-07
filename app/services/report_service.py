@@ -39,6 +39,19 @@ def _rows_to_csv(headers: list[str], rows: list[list]) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
+def _rows_to_xlsx(headers: list[str], rows: list[list]) -> bytes:
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 async def get_outward_po_report(
     db: AsyncSession,
     *,
@@ -111,7 +124,7 @@ async def get_outward_po_report(
     )
     await db.commit()
 
-    if fmt == "csv":
+    if fmt in ("csv", "xlsx"):
         headers = ["PO Number", "Customer", "EAN", "Description", "Ordered Qty", "Packed Qty",
                    "Remaining", "Status", "Upload Date"]
         rows = [
@@ -120,7 +133,7 @@ async def get_outward_po_report(
              r.status.value, r.uploaded_at.isoformat()]
             for r in db_rows
         ]
-        return _rows_to_csv(headers, rows)
+        return _rows_to_csv(headers, rows) if fmt == "csv" else _rows_to_xlsx(headers, rows)
 
     items = [
         OutwardPOReportRow(
@@ -217,7 +230,7 @@ async def get_item_packing_report(
     )
     await db.commit()
 
-    if fmt == "csv":
+    if fmt in ("csv", "xlsx"):
         headers = ["Timestamp", "User", "Box ID", "EAN", "Result",
                    "Allocated PO", "Reject Reason", "Stock Flagged"]
         rows = [
@@ -226,7 +239,7 @@ async def get_item_packing_report(
              str(r.stock_flagged)]
             for r in db_rows
         ]
-        return _rows_to_csv(headers, rows)
+        return _rows_to_csv(headers, rows) if fmt == "csv" else _rows_to_xlsx(headers, rows)
 
     items = [
         ItemPackingReportRow(
@@ -361,7 +374,7 @@ async def get_variance_report(
     if fmt == "json":
         items_data = items_data[(page - 1) * page_size: page * page_size]
 
-    if fmt == "csv":
+    if fmt in ("csv", "xlsx"):
         headers = ["Customer", "EAN", "Total Inward Qty", "Total Outward Qty",
                    "Current Balance", "Stock Flagged Count", "Last Movement Date"]
         rows = [
@@ -371,7 +384,7 @@ async def get_variance_report(
              d["last_movement_date"].isoformat() if d["last_movement_date"] else ""]
             for d in items_data
         ]
-        return _rows_to_csv(headers, rows)
+        return _rows_to_csv(headers, rows) if fmt == "csv" else _rows_to_xlsx(headers, rows)
 
     return VarianceReportResponse(
         items=[
@@ -425,6 +438,7 @@ async def get_inscan_report(
             InwardBox.physical_qty,
             InwardBox.scanned_qty,
             InwardBox.submitted_at,
+            InwardBox.status,
             Customer.name.label("customer_name"),
             User.full_name.label("user_name"),
             InwardReference.po_number,
@@ -455,7 +469,9 @@ async def get_inscan_report(
 
     all_rows: list[InscanReportRow] = []
     for b in boxes:
-        box_variance = b.scanned_qty - (b.physical_qty or 0)
+        # PRD 9.1: Variance = physical - scanned (0 in v1 since they must match to
+        # submit; can differ only if a scan was later deleted from a completed box).
+        box_variance = (b.physical_qty or 0) - b.scanned_qty
         for ean, ean_qty in ean_counts.get(b.id, {}).items():
             all_rows.append(InscanReportRow(
                 inscan_number=b.inscan_number,
@@ -469,6 +485,7 @@ async def get_inscan_report(
                 variance=box_variance,
                 date=b.submitted_at,
                 user_name=b.user_name,
+                status=b.status.value,
             ))
 
     total = len(all_rows)
@@ -493,16 +510,16 @@ async def get_inscan_report(
     )
     await db.commit()
 
-    if fmt == "csv":
+    if fmt in ("csv", "xlsx"):
         headers = ["Inscan Number", "Customer", "PO Number", "Invoice Number", "Box Number",
-                   "EAN", "Scanned Qty", "Physical Qty", "Variance", "Date", "User"]
+                   "EAN", "Scanned Qty", "Physical Qty", "Variance", "Date", "User", "Status"]
         rows = [
             [r.inscan_number, r.customer_name, r.po_number or "", r.invoice_number or "",
              r.box_number or "", r.ean, r.scanned_qty, r.physical_qty or "", r.variance,
-             r.date.isoformat(), r.user_name or ""]
+             r.date.isoformat(), r.user_name or "", r.status]
             for r in paged_rows
         ]
-        return _rows_to_csv(headers, rows)
+        return _rows_to_csv(headers, rows) if fmt == "csv" else _rows_to_xlsx(headers, rows)
 
     return InscanReportResponse(
         items=paged_rows, total=total, from_date=from_date, to_date=to_date

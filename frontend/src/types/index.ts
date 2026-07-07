@@ -177,6 +177,22 @@ export interface OutwardPOResponse {
   lines: OutwardPOLineResponse[]
 }
 
+export interface OutwardPOPreviewRow {
+  po_number: string
+  ean: string
+  ordered_qty: number
+  description: string | null
+}
+
+export interface OutwardPOPreviewResponse {
+  first_10_rows: OutwardPOPreviewRow[]
+  total_rows: number
+  total_quantity: number
+  problems: string[]
+  is_valid: boolean
+  consolidation_notice: string | null
+}
+
 // ── Outward — Box ─────────────────────────────────────────────────────────────
 
 export type OutwardBoxStatus = 'open' | 'in_use' | 'closed'
@@ -209,6 +225,15 @@ export interface OutwardBoxCreate {
 
 export interface OutwardScanCreate {
   ean: string
+}
+
+export interface LabelGenerateRequest {
+  customer_id: number
+  count: number
+}
+
+export interface LabelGenerateResponse {
+  box_ids: string[]
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────

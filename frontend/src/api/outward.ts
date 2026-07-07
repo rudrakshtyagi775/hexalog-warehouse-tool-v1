@@ -1,7 +1,10 @@
 import { apiClient } from './client'
 import type {
+  LabelGenerateRequest,
+  LabelGenerateResponse,
   OutwardBoxCreate,
   OutwardBoxResponse,
+  OutwardPOPreviewResponse,
   OutwardPOResponse,
   OutwardScanCreate,
   OutwardScanCreateResponse,
@@ -12,6 +15,13 @@ export const outwardApi = {
   uploadPO: (formData: FormData) =>
     apiClient
       .post<OutwardPOResponse>('/outward/pos', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data),
+
+  previewPO: (formData: FormData) =>
+    apiClient
+      .post<OutwardPOPreviewResponse>('/outward/pos/preview', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       })
       .then((r) => r.data),
@@ -32,4 +42,23 @@ export const outwardApi = {
 
   deleteScan: (scanId: number) =>
     apiClient.delete<OutwardScanResponse>(`/outward/scans/${scanId}`).then((r) => r.data),
+
+  generateLabels: (data: LabelGenerateRequest) =>
+    apiClient
+      .post<LabelGenerateResponse>('/outward/labels/generate', data)
+      .then((r) => r.data),
+
+  downloadLabelsPdf: (boxIds: string[]) =>
+    apiClient
+      .get('/outward/labels/pdf', {
+        params: { box_ids: boxIds },
+        paramsSerializer: { indexes: null },
+        responseType: 'blob',
+      })
+      .then((r) => r.data as Blob),
+
+  reprintLabel: (boxId: string) =>
+    apiClient
+      .post(`/outward/boxes/${boxId}/reprint`, undefined, { responseType: 'blob' })
+      .then((r) => r.data as Blob),
 }
