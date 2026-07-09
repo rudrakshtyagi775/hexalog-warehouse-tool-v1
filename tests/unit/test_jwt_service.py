@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import jwt
@@ -25,7 +25,7 @@ def test_issue_and_decode_roundtrip():
 
 def test_expires_at_is_approximately_15_minutes():
     _, expires_at = issue_access_token(1, 1, [UserRoleEnum.packer], "s1")
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     delta = expires_at - now
     assert timedelta(minutes=14) < delta <= timedelta(minutes=16)
 
@@ -35,7 +35,7 @@ def test_expired_token_raises_401():
     with patch("app.services.jwt_service.settings") as mock_settings:
         mock_settings.ACCESS_TOKEN_EXPIRE_MINUTES = -1
         mock_settings.JWT_SECRET_KEY = settings.JWT_SECRET_KEY
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
         payload = {
             "sub": "1", "org": "1", "roles": [], "session_id": "s1",
             "iat": int((now - timedelta(minutes=2)).timestamp()),
@@ -60,9 +60,11 @@ def test_tampered_token_raises_401():
 
 
 def test_alg_none_rejected():
-    from fastapi import HTTPException
     # Manually craft an unsigned token
-    import base64, json
+    import base64
+    import json
+
+    from fastapi import HTTPException
     header = base64.urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).rstrip(b"=").decode()
     payload_b64 = base64.urlsafe_b64encode(json.dumps(
         {"sub": "1", "org": "1", "roles": [], "session_id": "s1",

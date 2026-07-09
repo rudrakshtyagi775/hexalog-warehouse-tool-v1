@@ -3,7 +3,7 @@ import hmac
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import structlog
 from fastapi import HTTPException, status
@@ -14,7 +14,8 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.models.enums import AuditModuleEnum, UserRoleEnum
-from app.models.user import Session as SessionModel, User, UserOrganisation, UserRole
+from app.models.user import Session as SessionModel
+from app.models.user import User, UserOrganisation, UserRole
 from app.services.audit_service import write_audit_log
 from app.services.jwt_service import issue_access_token
 from app.services.password_service import DUMMY_HASH, verify_password
@@ -82,7 +83,7 @@ async def _check_ip_rate_limit(ip_address: str | None) -> None:
     if ip_address is None:
         return
 
-    window_start = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
+    window_start = datetime.now(tz=UTC).replace(second=0, microsecond=0)
     async with _side_effect_session_factory() as rate_session:
         result = await rate_session.execute(
             text("""
@@ -109,7 +110,7 @@ async def _record_failed_attempt(user_id: int, current_failed_attempts: int) -> 
 
     Uses a separate session so this always persists even on main-tx rollback.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     new_count = current_failed_attempts + 1
 
     async with _side_effect_session_factory() as fa_session:
@@ -159,7 +160,7 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
 
     # Lockout check — before password verification to avoid bcrypt timing on locked account
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     if user.locked_until and now < user.locked_until:
         verify_password(password, DUMMY_HASH)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
@@ -257,7 +258,7 @@ async def refresh_session(
 ) -> RefreshResult:
     """Rotate the refresh token and issue a new access token. 5-case flow per June 18 design."""
     token_hash = _hash_refresh_token(raw_token)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     # SELECT FOR UPDATE — prevents concurrent refresh calls from double-rotating
     stmt = (
@@ -423,7 +424,7 @@ async def logout(
     if session:
         user_id = session.user_id
         organisation_id = session.organisation_id
-        session.revoked_at = datetime.now(tz=timezone.utc)
+        session.revoked_at = datetime.now(tz=UTC)
         session.revoke_reason = "logout"
 
     await write_audit_log(
@@ -481,7 +482,7 @@ async def switch_organisation(
     roles = [ur.role for ur in roles_result.scalars().all()]
 
     # New session
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     raw_token = secrets.token_hex(32)
     token_hash = _hash_refresh_token(raw_token)
     session_id = uuid.uuid4()
@@ -541,7 +542,7 @@ async def logout_all_devices(
     ip_address: str | None,
 ) -> int:
     """Revoke all sessions for this user except the current one. Returns revoked count."""
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     result = await db.execute(
         update(SessionModel)
@@ -583,7 +584,7 @@ async def revoke_session(
     Returns 404 for sessions that don't exist, belong to a different org, or are
     already revoked — all indistinguishable to the caller to prevent oracle leakage.
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     result = await db.execute(
         select(SessionModel)
@@ -642,7 +643,7 @@ async def revoke_user_sessions(
             detail="User not found in this organisation",
         )
 
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     result = await db.execute(
         update(SessionModel)
         .where(

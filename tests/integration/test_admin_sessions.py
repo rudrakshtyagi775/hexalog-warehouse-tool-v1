@@ -18,14 +18,14 @@ Endpoints under test:
 
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
 from app.models.audit_log import AuditLog
-from app.models.enums import UserRoleEnum
 from app.models.organisation import Organisation
-from app.models.user import Session as SessionModel, User, UserOrganisation, UserRole
+from app.models.user import Session as SessionModel
+from app.models.user import User
 from app.services.auth_service import _hash_refresh_token
 from app.services.password_service import hash_password
 
@@ -57,7 +57,7 @@ async def _insert_session(db, user_id: int, org_id: int) -> tuple[SessionModel, 
     """
     raw_token = secrets.token_hex(32)
     token_hash = _hash_refresh_token(raw_token)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     session = SessionModel(
         id=uuid.uuid4(),
         refresh_token_hash=token_hash,
@@ -117,7 +117,7 @@ async def test_revoke_session_already_revoked_returns_404(client, admin_user, pa
     admin_token = await _login(client, admin_user.email, "AdminPass1!", org.id)
 
     session, _ = await _insert_session(db, packer_user.id, org.id)
-    session.revoked_at = datetime.now(tz=timezone.utc)
+    session.revoked_at = datetime.now(tz=UTC)
     session.revoke_reason = "logout"
     await db.commit()
 
@@ -238,7 +238,7 @@ async def test_revoke_user_sessions_no_active_sessions(client, admin_user, packe
 
     # Pre-revoke any sessions packer_user might have
     session, _ = await _insert_session(db, packer_user.id, org.id)
-    session.revoked_at = datetime.now(tz=timezone.utc)
+    session.revoked_at = datetime.now(tz=UTC)
     session.revoke_reason = "logout"
     await db.commit()
 

@@ -1,12 +1,12 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 # Load all models so Alembic autogenerate sees every table
 import app.models  # noqa: F401
-from app.models.base import Base
+from alembic import context
 from app.config import settings  # pydantic-settings loads .env automatically
+from app.models.base import Base
 
 config = context.config
 

@@ -4,7 +4,6 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -14,6 +13,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -92,7 +92,7 @@ class UserRole(Base):
         ForeignKey("organisations.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[UserRoleEnum] = mapped_column(
-        Enum(UserRoleEnum, name="user_role_enum", native_enum=True), nullable=False
+        PGEnum(UserRoleEnum, name="user_role_enum", create_type=False), nullable=False
     )
     assigned_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

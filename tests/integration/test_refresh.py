@@ -10,7 +10,7 @@ Five-case flow under test:
   Case 5 (happy path) — valid session → 200, token rotated, new cookie set
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -130,7 +130,7 @@ async def test_refresh_theft_detected_after_grace_window(client, admin_user, org
 
     # Expire the grace window by backdating previous_token_valid_until
     session = await _get_session_by_token(db, t1)
-    session.previous_token_valid_until = datetime.now(tz=timezone.utc) - timedelta(seconds=60)
+    session.previous_token_valid_until = datetime.now(tz=UTC) - timedelta(seconds=60)
     await db.commit()
 
     # Replay T0 — grace window has passed → theft detected
@@ -152,7 +152,7 @@ async def test_refresh_revoked_session(client, admin_user, org, db):
     _, raw_token = await _login(client, admin_user, org)
 
     session = await _get_session_by_token(db, raw_token)
-    session.revoked_at = datetime.now(tz=timezone.utc)
+    session.revoked_at = datetime.now(tz=UTC)
     session.revoke_reason = "admin_revoke"
     await db.commit()
 
@@ -169,7 +169,7 @@ async def test_refresh_expired_session(client, admin_user, org, db):
     _, raw_token = await _login(client, admin_user, org)
 
     session = await _get_session_by_token(db, raw_token)
-    session.expires_at = datetime.now(tz=timezone.utc) - timedelta(hours=1)
+    session.expires_at = datetime.now(tz=UTC) - timedelta(hours=1)
     await db.commit()
 
     resp = await client.post(REFRESH_URL, cookies={_COOKIE: raw_token})
@@ -185,7 +185,7 @@ async def test_refresh_inactivity_timeout(client, admin_user, org, db):
     _, raw_token = await _login(client, admin_user, org)
 
     session = await _get_session_by_token(db, raw_token)
-    session.last_used_at = datetime.now(tz=timezone.utc) - timedelta(
+    session.last_used_at = datetime.now(tz=UTC) - timedelta(
         minutes=settings.SESSION_INACTIVITY_MINUTES + 1
     )
     await db.commit()
@@ -205,7 +205,7 @@ async def test_refresh_inactivity_timeout_audit_log_written(client, admin_user, 
     _, raw_token = await _login(client, admin_user, org)
 
     session = await _get_session_by_token(db, raw_token)
-    session.last_used_at = datetime.now(tz=timezone.utc) - timedelta(
+    session.last_used_at = datetime.now(tz=UTC) - timedelta(
         minutes=settings.SESSION_INACTIVITY_MINUTES + 1
     )
     await db.commit()

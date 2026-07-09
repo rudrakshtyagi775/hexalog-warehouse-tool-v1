@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Index, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Text, func
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,7 +27,7 @@ class AuditLog(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     module: Mapped[AuditModuleEnum] = mapped_column(
-        Enum(AuditModuleEnum, name="audit_module_enum", native_enum=True), nullable=False
+        PGEnum(AuditModuleEnum, name="audit_module_enum", create_type=False), nullable=False
     )
     action: Mapped[str] = mapped_column(Text, nullable=False)
     resource_type: Mapped[str] = mapped_column(Text, nullable=False)

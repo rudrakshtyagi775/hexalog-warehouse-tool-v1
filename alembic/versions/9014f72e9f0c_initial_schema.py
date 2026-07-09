@@ -79,7 +79,7 @@ def upgrade() -> None:
         sa.Column("organisation_id", sa.Integer(), nullable=False),
         sa.Column(
             "role",
-            sa.Enum("admin", "inward_operator", "packer", name="user_role_enum", create_type=False),
+            postgresql.ENUM("admin", "inward_operator", "packer", name="user_role_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("assigned_by", sa.Integer(), nullable=True),
@@ -153,7 +153,7 @@ def upgrade() -> None:
         sa.Column("user_id", sa.Integer(), nullable=True),
         sa.Column(
             "module",
-            sa.Enum("shared", "inward", "outward", "reports", name="audit_module_enum", create_type=False),
+            postgresql.ENUM("shared", "inward", "outward", "reports", name="audit_module_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("action", sa.Text(), nullable=False),
@@ -180,7 +180,7 @@ def upgrade() -> None:
         sa.Column("code", sa.Text(), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("active", "inactive", name="customer_status_enum", create_type=False),
+            postgresql.ENUM("active", "inactive", name="customer_status_enum", create_type=False),
             nullable=False,
         ),
         sa.Column("created_by", sa.Integer(), nullable=True),

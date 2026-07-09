@@ -11,7 +11,7 @@ Behaviour under test:
 
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -43,7 +43,7 @@ async def _insert_session(db, user_id: int, org_id: int) -> tuple[SessionModel, 
     """
     raw_token = secrets.token_hex(32)
     token_hash = _hash_refresh_token(raw_token)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     session = SessionModel(
         id=uuid.uuid4(),
         refresh_token_hash=token_hash,
@@ -165,7 +165,7 @@ async def test_logout_all_skips_already_revoked_sessions(client, admin_user, org
     access_token, _ = await _login(client, admin_user, org)
 
     pre_revoked, _ = await _insert_session(db, admin_user.id, org.id)
-    pre_revoked.revoked_at = datetime.now(tz=timezone.utc)
+    pre_revoked.revoked_at = datetime.now(tz=UTC)
     pre_revoked.revoke_reason = "logout"
     active, _ = await _insert_session(db, admin_user.id, org.id)
     await db.commit()
