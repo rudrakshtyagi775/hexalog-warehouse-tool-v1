@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
+import axios from 'axios'
 import { useAuth } from '@/contexts/AuthContext'
 import { extractErrorMessage } from '@/api/client'
 import { Button } from '@/components/ui/Button'
@@ -38,7 +39,11 @@ export function LoginPage() {
       await login(data.email, data.password, data.organisation_id)
       navigate('/dashboard')
     } catch (err) {
-      setServerError(extractErrorMessage(err, 'Invalid credentials. Please try again.'))
+      if (axios.isAxiosError(err) && err.response?.status === 401) {
+        setServerError('Unable to sign in. Please check your email and password, then try again.')
+      } else {
+        setServerError(extractErrorMessage(err, 'Unable to sign in. Please try again.'))
+      }
     }
   }
 
