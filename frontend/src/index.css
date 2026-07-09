@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  :focus-visible {
+    outline: 2px solid #8F62DF;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .btn-brand {
+    background-color: #8F62DF;
+    color: #ffffff;
+  }
+  .btn-brand:hover:not(:disabled) {
+    background-color: #7B4ED6;
+  }
+  .btn-brand:active:not(:disabled) {
+    background-color: #744C8A;
+  }
+
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors;
+  }
+  .sidebar-link-active {
+    background-color: #8F62DF;
+    color: #ffffff;
+  }
+  .sidebar-link-inactive {
+    color: #C4A8E0;
+  }
+  .sidebar-link-inactive:hover {
+    background-color: #3D2350;
+    color: #ffffff;
+  }
+}

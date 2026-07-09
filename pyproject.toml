@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hexalog-warehouse-tool"
+version = "0.1.0"
+description = "Hexalog Warehouse Tool — Inward + Outward modules on a shared platform"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",
+    "pydantic[email]>=2.7",
+    "pydantic-settings>=2.3",
+    "PyJWT>=2.9",
+    "bcrypt>=4.0",
+    "structlog>=24.1",
+    "python-multipart>=0.0.9",
+    "weasyprint>=62",
+    "qrcode>=7.4",
+    "python-barcode>=0.15",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "pytest-cov>=5.0",
+    "factory-boy>=3.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["alembic/versions/"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["UP042"]  # project deliberately uses (str, enum.Enum) for PG enum compatibility
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501"]  # long test names and docstrings are acceptable in test files
