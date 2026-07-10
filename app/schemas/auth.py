@@ -10,7 +10,7 @@ from app.models.enums import UserRoleEnum
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    organisation_id: int
+    organisation_id: int | None = None
 
 
 # ── Response sub-objects ──────────────────────────────────────────────────────
@@ -35,6 +35,18 @@ class LoginResponse(BaseModel):
     user: UserInfo
     roles: list[UserRoleEnum]
     organisation: OrganisationInfo
+
+
+class OrganisationChoiceResponse(BaseModel):
+    """Placeholder response for accounts with multiple active organisations.
+
+    Milestone 1 scope only: no session/tokens are issued. The picker UI that
+    lets the caller complete login with a chosen organisation_id is a later
+    milestone.
+    """
+
+    requires_organisation_selection: bool = True
+    organisations: list[OrganisationInfo]
 
 
 class RefreshResponse(BaseModel):

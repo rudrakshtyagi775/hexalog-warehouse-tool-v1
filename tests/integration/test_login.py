@@ -3,6 +3,11 @@ import time
 
 import pytest
 
+from app.models.enums import UserRoleEnum
+from app.models.organisation import Organisation
+from app.models.user import User, UserOrganisation, UserRole
+from app.services.password_service import hash_password
+
 LOGIN_URL = "/api/auth/login"
 
 
@@ -136,3 +141,169 @@ async def test_login_timing_parity(client, admin_user, org):
         f"wrong_pw={mean_wrong * 1000:.1f} ms, "
         f"diff={diff * 1000:.1f} ms (limit=150 ms)"
     )
+
+
+# ── Milestone 1: organisation_id becomes optional / auto-select ───────────────
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_auto_selects_single_org(client, admin_user, org):
+    """A user with exactly one active organisation is logged straight in
+    without specifying organisation_id."""
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "admin@test.com", "password": "AdminPass1!"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["organisation"]["id"] == org.id
+    assert "access_token" in data
+    assert "refresh_token" in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_ignores_inactive_org_membership(db, client, org):
+    """A membership in an inactive organisation must not count toward the
+    'exactly one active organisation' auto-select rule."""
+    inactive_org = Organisation(name="Inactive Org", is_active=False)
+    db.add(inactive_org)
+    await db.flush()
+
+    u = User(
+        email="single-active@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="Single Active Org User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
+    db.add(UserOrganisation(user_id=u.id, organisation_id=inactive_org.id))
+    db.add(UserRole(user_id=u.id, organisation_id=org.id, role=UserRoleEnum.admin))
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "single-active@test.com", "password": "Password1!"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["organisation"]["id"] == org.id
+
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_zero_active_orgs_returns_generic_failure(db, client):
+    """A user with no organisation membership at all gets the same generic
+    401 as any other authentication failure — no oracle."""
+    u = User(
+        email="no-org@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="No Org User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "no-org@test.com", "password": "Password1!"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid credentials"
+
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_only_inactive_org_returns_generic_failure(db, client):
+    """A user whose only membership is an inactive organisation is treated
+    the same as having zero active organisations."""
+    inactive_org = Organisation(name="Solely Inactive Org", is_active=False)
+    db.add(inactive_org)
+    await db.flush()
+
+    u = User(
+        email="inactive-org-only@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="Inactive Org Only User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=inactive_org.id))
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "inactive-org-only@test.com", "password": "Password1!"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid credentials"
+
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_multiple_active_orgs_returns_placeholder(
+    db, client, org
+):
+    """Milestone 1 scope: multi-org accounts get a placeholder response — no
+    session, no tokens, no cookie. The picker UI is a later milestone."""
+    second_org = Organisation(name="Second Org", is_active=True)
+    db.add(second_org)
+    await db.flush()
+
+    u = User(
+        email="multi-org@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="Multi Org User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
+    db.add(UserOrganisation(user_id=u.id, organisation_id=second_org.id))
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "multi-org@test.com", "password": "Password1!"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["requires_organisation_selection"] is True
+    returned_ids = {o["id"] for o in data["organisations"]}
+    assert returned_ids == {org.id, second_org.id}
+    assert "access_token" not in data
+    assert "refresh_token" not in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_login_with_explicit_organisation_id_still_works_for_multi_org_user(
+    db, client, org
+):
+    """Backward compatibility: existing clients that pass organisation_id
+    must bypass the new auto-select/placeholder logic entirely, even for a
+    multi-org account."""
+    second_org = Organisation(name="Second Org BC", is_active=True)
+    db.add(second_org)
+    await db.flush()
+
+    u = User(
+        email="multi-org-bc@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="Multi Org BC User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
+    db.add(UserOrganisation(user_id=u.id, organisation_id=second_org.id))
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={
+            "email": "multi-org-bc@test.com",
+            "password": "Password1!",
+            "organisation_id": second_org.id,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["organisation"]["id"] == second_org.id
+    assert "access_token" in data

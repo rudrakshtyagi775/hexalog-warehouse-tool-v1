@@ -47,6 +47,21 @@ class LoginResult:
 
 
 @dataclass
+class OrganisationOption:
+    id: int
+    name: str
+
+
+@dataclass
+class OrganisationChoiceRequired:
+    """Returned by login() when organisation_id is omitted and the account has
+    more than one active organisation. Milestone 1 placeholder only — no
+    session or tokens are created for this result."""
+
+    organisations: list[OrganisationOption]
+
+
+@dataclass
 class RefreshResult:
     access_token: str
     expires_at: datetime
@@ -137,10 +152,10 @@ async def login(
     *,
     email: str,
     password: str,
-    organisation_id: int,
+    organisation_id: int | None = None,
     ip_address: str | None,
     user_agent: str | None,
-) -> LoginResult:
+) -> LoginResult | OrganisationChoiceRequired:
     await _check_ip_rate_limit(ip_address)
 
     # Load user + their org memberships in one round-trip
@@ -173,6 +188,30 @@ async def login(
     # is_active check — after successful password so we don't reveal active/inactive distinction
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS)
+
+    # organisation_id auto-resolution (Milestone 1) — only when the caller omits it.
+    # Callers that pass organisation_id explicitly skip this block entirely and hit
+    # the unchanged membership-check path below, preserving backward compatibility.
+    if organisation_id is None:
+        active_memberships = [
+            uo
+            for uo in user.user_organisations
+            if uo.organisation is not None and uo.organisation.is_active
+        ]
+        if not active_memberships:
+            # Same generic failure as an unmatched organisation_id today — no oracle.
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=_INVALID_CREDENTIALS
+            )
+        if len(active_memberships) == 1:
+            organisation_id = active_memberships[0].organisation_id
+        else:
+            return OrganisationChoiceRequired(
+                organisations=[
+                    OrganisationOption(id=uo.organisation_id, name=uo.organisation.name)
+                    for uo in active_memberships
+                ]
+            )
 
     # Organisation membership check
     user_org = next(

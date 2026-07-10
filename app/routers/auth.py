@@ -9,6 +9,7 @@ from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
     MeResponse,
+    OrganisationChoiceResponse,
     OrganisationInfo,
     RefreshResponse,
     SwitchOrganisationRequest,
@@ -18,6 +19,7 @@ from app.schemas.auth import (
 from app.schemas.common import MessageResponse
 from app.services.auth_service import (
     LoginResult,
+    OrganisationChoiceRequired,
     login,
     logout,
     logout_all_devices,
@@ -55,15 +57,15 @@ def _clear_refresh_cookie(response: Response) -> None:
     )
 
 
-@router.post("/login", response_model=LoginResponse, status_code=status.HTTP_200_OK)
+@router.post("/login", status_code=status.HTTP_200_OK)
 async def login_endpoint(
     body: LoginRequest,
     request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
-) -> LoginResponse:
+) -> LoginResponse | OrganisationChoiceResponse:
     user_agent = request.headers.get("user-agent")
-    result: LoginResult = await login(
+    result: LoginResult | OrganisationChoiceRequired = await login(
         db,
         email=body.email,
         password=body.password,
@@ -71,6 +73,14 @@ async def login_endpoint(
         ip_address=get_client_ip(request),
         user_agent=user_agent,
     )
+
+    if isinstance(result, OrganisationChoiceRequired):
+        return OrganisationChoiceResponse(
+            organisations=[
+                OrganisationInfo(id=o.id, name=o.name) for o in result.organisations
+            ]
+        )
+
     _set_refresh_cookie(response, result.refresh_token)
     return LoginResponse(
         access_token=result.access_token,
