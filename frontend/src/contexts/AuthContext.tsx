@@ -7,8 +7,8 @@ import React, {
   useState,
 } from 'react'
 import { tokenStore } from '@/api/client'
-import { authApi } from '@/api/auth'
-import type { MeResponse, OrganisationInfo, Role } from '@/types'
+import { authApi, isOrganisationChoiceResponse } from '@/api/auth'
+import type { LoginResponse, MeResponse, OrganisationChoiceResponse, OrganisationInfo, Role } from '@/types'
 
 interface AuthState {
   user: MeResponse | null
@@ -19,7 +19,11 @@ interface AuthState {
 }
 
 interface AuthContextValue extends AuthState {
-  login: (email: string, password: string, organisationId: number) => Promise<void>
+  login: (
+    email: string,
+    password: string,
+    organisationId?: number,
+  ) => Promise<LoginResponse | OrganisationChoiceResponse>
   logout: () => Promise<void>
   hasRole: (role: Role) => boolean
   isAdmin: () => boolean
@@ -76,8 +80,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearAuth])
 
   const login = useCallback(
-    async (email: string, password: string, organisationId: number) => {
+    async (email: string, password: string, organisationId?: number) => {
       const res = await authApi.login({ email, password, organisation_id: organisationId })
+      if (isOrganisationChoiceResponse(res)) {
+        return res
+      }
       tokenStore.set(res.access_token)
       setAuthenticated(
         {
@@ -91,6 +98,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         res.organisation,
         res.roles,
       )
+      return res
     },
     [setAuthenticated],
   )

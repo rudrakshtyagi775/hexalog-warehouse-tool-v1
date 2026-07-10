@@ -3,13 +3,22 @@ import type {
   LoginRequest,
   LoginResponse,
   MeResponse,
+  OrganisationChoiceResponse,
   SwitchOrganisationRequest,
   SwitchOrganisationResponse,
 } from '@/types'
 
+export function isOrganisationChoiceResponse(
+  data: LoginResponse | OrganisationChoiceResponse,
+): data is OrganisationChoiceResponse {
+  return 'requires_organisation_selection' in data
+}
+
 export const authApi = {
   login: (data: LoginRequest) =>
-    apiClient.post<LoginResponse>('/auth/login', data).then((r) => r.data),
+    apiClient
+      .post<LoginResponse | OrganisationChoiceResponse>('/auth/login', data)
+      .then((r) => r.data),
 
   refresh: () =>
     apiClient.post<{ access_token: string }>('/auth/refresh').then((r) => r.data),

@@ -2,9 +2,11 @@ import statistics
 import time
 
 import pytest
+from sqlalchemy import select
 
 from app.models.enums import UserRoleEnum
 from app.models.organisation import Organisation
+from app.models.user import Session as SessionModel
 from app.models.user import User, UserOrganisation, UserRole
 from app.services.password_service import hash_password
 
@@ -270,6 +272,39 @@ async def test_login_without_organisation_id_multiple_active_orgs_returns_placeh
     assert returned_ids == {org.id, second_org.id}
     assert "access_token" not in data
     assert "refresh_token" not in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_login_without_organisation_id_multiple_active_orgs_creates_no_session(
+    db, client, org
+):
+    """Milestone 2 invariant: the placeholder response must not persist a
+    sessions row — organisation selection alone must never establish auth."""
+    second_org = Organisation(name="Second Org No Session", is_active=True)
+    db.add(second_org)
+    await db.flush()
+
+    u = User(
+        email="multi-org-no-session@test.com",
+        password_hash=hash_password("Password1!"),
+        full_name="Multi Org No Session User",
+        is_active=True,
+    )
+    db.add(u)
+    await db.flush()
+    db.add(UserOrganisation(user_id=u.id, organisation_id=org.id))
+    db.add(UserOrganisation(user_id=u.id, organisation_id=second_org.id))
+    await db.flush()
+
+    resp = await client.post(
+        LOGIN_URL,
+        json={"email": "multi-org-no-session@test.com", "password": "Password1!"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["requires_organisation_selection"] is True
+
+    result = await db.execute(select(SessionModel).where(SessionModel.user_id == u.id))
+    assert result.scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio

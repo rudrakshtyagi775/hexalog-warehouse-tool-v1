@@ -16,7 +16,7 @@ export interface OrganisationInfo {
 export interface LoginRequest {
   email: string
   password: string
-  organisation_id: number
+  organisation_id?: number
 }
 
 export interface LoginResponse {
@@ -26,6 +26,11 @@ export interface LoginResponse {
   user: UserInfo
   roles: Role[]
   organisation: OrganisationInfo
+}
+
+export interface OrganisationChoiceResponse {
+  requires_organisation_selection: true
+  organisations: OrganisationInfo[]
 }
 
 export interface RefreshResponse {
